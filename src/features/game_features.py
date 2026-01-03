@@ -36,11 +36,14 @@ except ImportError:
 class GameFeatureBuilder:
     """Builds game-level features for prediction."""
 
+    # Default path for player impact model
+    DEFAULT_IMPACT_PATH = "data/cache/player_impact/player_impact_model.parquet"
+
     def __init__(
         self,
         team_builder: Optional[TeamFeatureBuilder] = None,
         use_elo: bool = True,
-        use_lineup_features: bool = False,
+        use_lineup_features: bool = None,  # Auto-detect if None
         use_matchup_features: bool = True,
         player_impact_path: Optional[str] = None,
     ):
@@ -48,12 +51,24 @@ class GameFeatureBuilder:
         self.use_elo = use_elo
         self.elo_system = EloRatingSystem() if use_elo else None
 
+        # Determine player impact model path
+        impact_path = player_impact_path or self.DEFAULT_IMPACT_PATH
+
+        # Auto-detect lineup features if not explicitly set
+        # Enable if model exists and HAS_LINEUP_FEATURES is True
+        if use_lineup_features is None:
+            use_lineup_features = (
+                HAS_LINEUP_FEATURES and
+                os.path.exists(impact_path)
+            )
+            if use_lineup_features:
+                logger.info(f"Auto-enabled lineup features (found {impact_path})")
+
         # Initialize lineup feature builder if requested
         self.use_lineup_features = use_lineup_features and HAS_LINEUP_FEATURES
         self.lineup_builder = None
 
         if self.use_lineup_features:
-            impact_path = player_impact_path or "data/cache/player_impact/player_impact_model.parquet"
             try:
                 self.lineup_builder = LineupFeatureBuilder(impact_model_path=impact_path)
                 logger.info("Lineup feature builder initialized")

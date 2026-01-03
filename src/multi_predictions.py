@@ -22,6 +22,31 @@ from src.models.point_spread import PointSpreadModel
 from src.models.totals import TotalsModel
 from src.models.dual_model import DualPredictionModel
 
+# Optional player impact features
+try:
+    from src.features.player_impact import PlayerImpactModel
+    HAS_PLAYER_IMPACT = True
+except ImportError:
+    PlayerImpactModel = None
+    HAS_PLAYER_IMPACT = False
+
+# Optional stacked ensemble model
+try:
+    from src.models.stacking import StackedEnsembleModel
+    HAS_STACKING = True
+except ImportError:
+    StackedEnsembleModel = None
+    HAS_STACKING = False
+
+# Optional matchup analysis
+try:
+    from src.features.matchup_features import MatchupFeatureBuilder, MatchupAdjuster
+    HAS_MATCHUP = True
+except ImportError:
+    MatchupFeatureBuilder = None
+    MatchupAdjuster = None
+    HAS_MATCHUP = False
+
 
 class MultiPredictor:
     """Generate predictions for all bet types: moneyline, spread, and totals."""
@@ -32,6 +57,7 @@ class MultiPredictor:
         spread_model_path: str = "models/point_spread_model_tuned.pkl",
         totals_model_path: str = "models/totals_model_tuned.pkl",
         dual_model_path: str = "models/dual_model.pkl",
+        stacking_model_path: str = "models/stacked_ensemble.pkl",
         min_edge: float = 0.03,
         kelly_fraction: float = 0.2,
         use_injuries: bool = True,
@@ -84,6 +110,69 @@ class MultiPredictor:
         # Initialize edge strategy (validated ATS strategy with team filter)
         self.edge_strategy = EdgeStrategy.team_filtered_strategy()
         logger.info("Initialized edge strategy (Edge 5+ & No B2B & Team Filter)")
+
+        # Initialize player impact model if available
+        self.player_impact_model = None
+        self.team_impact_cache = {}  # Cache team -> total impact for top 8 players
+        impact_model_path = "data/cache/player_impact/player_impact_model.parquet"
+
+        if HAS_PLAYER_IMPACT and os.path.exists(impact_model_path):
+            try:
+                self.player_impact_model = PlayerImpactModel()
+                self.player_impact_model.load(impact_model_path)
+
+                # Build team impact cache (sum of top 8 players by minutes)
+                impacts_df = self.player_impact_model.get_impacts_df()
+                for team in impacts_df['team_abbrev'].unique():
+                    team_players = impacts_df[impacts_df['team_abbrev'] == team]
+                    top_8 = team_players.nlargest(8, 'minutes')
+                    self.team_impact_cache[team] = top_8['impact'].sum()
+
+                logger.info(f"Loaded player impact model: {len(impacts_df)} players, {len(self.team_impact_cache)} teams")
+            except Exception as e:
+                logger.warning(f"Could not load player impact model: {e}")
+
+        # Initialize stacked ensemble model if available
+        self.stacking_model = None
+        self.stacking_feature_cols = None
+        if HAS_STACKING and os.path.exists(stacking_model_path):
+            try:
+                with open(stacking_model_path, 'rb') as f:
+                    self.stacking_model = pickle.load(f)
+                if self.stacking_model.is_fitted:
+                    # Stacking model uses same features as base models (moneyline features)
+                    self.stacking_feature_cols = self.moneyline_feature_cols
+                    logger.info(f"Loaded stacked ensemble model: {len(self.stacking_model.base_models)} base models")
+                else:
+                    logger.warning("Stacking model loaded but not fitted")
+                    self.stacking_model = None
+            except Exception as e:
+                logger.warning(f"Could not load stacking model: {e}")
+
+        # Initialize matchup adjuster for H2H and rivalry analysis
+        self.matchup_adjuster = None
+        self.matchup_builder = None
+        self.historical_games = None
+        if HAS_MATCHUP:
+            try:
+                self.matchup_builder = MatchupFeatureBuilder(
+                    h2h_window_games=10,
+                    h2h_window_seasons=3,
+                    recency_decay=0.9,
+                )
+                self.matchup_adjuster = MatchupAdjuster(
+                    matchup_builder=self.matchup_builder,
+                    adjustment_strength=0.15,  # 15% adjustment weight
+                )
+                # Load historical games for H2H lookup
+                games_path = "data/raw/games.parquet"
+                if os.path.exists(games_path):
+                    self.historical_games = pd.read_parquet(games_path)
+                    logger.info(f"Loaded {len(self.historical_games)} historical games for matchup analysis")
+                else:
+                    logger.warning("No historical games found for matchup analysis")
+            except Exception as e:
+                logger.warning(f"Could not initialize matchup adjuster: {e}")
 
     def get_recent_games(self, days: int = 60) -> pd.DataFrame:
         """Fetch recent games for feature building."""
@@ -166,6 +255,7 @@ class MultiPredictor:
             df = self._add_elo_features(df)
             df = self._add_schedule_features(df, recent_games)
             df = self._add_season_record(df, recent_games)
+            df = self._add_lineup_impact_features(df)
 
         return df
 
@@ -398,6 +488,96 @@ class MultiPredictor:
         logger.info(f"Added schedule features: home_b2b={sum(home_b2b)}, away_b2b={sum(away_b2b)}")
         return df
 
+    def _add_lineup_impact_features(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Add injury-adjusted player impact features for lineup strength.
+
+        Uses LineupFeatureBuilder with real-time injury data to compute
+        RAPM-based lineup strength adjusted for injured players.
+        """
+        # Try to use LineupFeatureBuilder with injury adjustment
+        try:
+            from src.features.lineup_features import LineupFeatureBuilder
+            impact_model_path = "data/cache/player_impact/player_impact_model.parquet"
+
+            if os.path.exists(impact_model_path):
+                lineup_builder = LineupFeatureBuilder(impact_model_path=impact_model_path)
+
+                home_impacts = []
+                away_impacts = []
+                home_missing = []
+                away_missing = []
+
+                for _, row in df.iterrows():
+                    home_team = self._normalize_team_name(row["home_team"])
+                    away_team = self._normalize_team_name(row["away_team"])
+
+                    # Get injured player IDs if injury builder is available
+                    home_injured_ids = []
+                    away_injured_ids = []
+                    if self.use_injuries and self.injury_builder:
+                        try:
+                            home_injured_ids = self.injury_builder.get_injured_player_ids(home_team)
+                            away_injured_ids = self.injury_builder.get_injured_player_ids(away_team)
+                        except Exception as e:
+                            logger.warning(f"Could not get injured player IDs for {home_team} vs {away_team}: {e}")
+                            home_injured_ids = []
+                            away_injured_ids = []
+
+                    # Build lineup features with injury adjustment
+                    features = lineup_builder.build_game_features(
+                        home_team, away_team,
+                        home_injured_ids, away_injured_ids
+                    )
+
+                    home_impacts.append(features.get('home_lineup_impact', 0.0))
+                    away_impacts.append(features.get('away_lineup_impact', 0.0))
+                    home_missing.append(features.get('home_missing_impact', 0.0))
+                    away_missing.append(features.get('away_missing_impact', 0.0))
+
+                df["home_lineup_impact"] = home_impacts
+                df["away_lineup_impact"] = away_impacts
+                df["lineup_impact_diff"] = df["home_lineup_impact"] - df["away_lineup_impact"]
+                df["home_missing_impact"] = home_missing
+                df["away_missing_impact"] = away_missing
+
+                logger.info(f"Added injury-adjusted RAPM features: {len([i for i in home_impacts if i != 0])} teams with data")
+                return df
+
+        except Exception as e:
+            logger.warning(f"Could not use LineupFeatureBuilder: {e}")
+
+        # Fallback to static team totals if lineup builder not available
+        if not self.team_impact_cache:
+            df["home_lineup_impact"] = 0.0
+            df["away_lineup_impact"] = 0.0
+            df["lineup_impact_diff"] = 0.0
+            df["home_missing_impact"] = 0.0
+            df["away_missing_impact"] = 0.0
+            return df
+
+        home_impacts = []
+        away_impacts = []
+
+        for _, row in df.iterrows():
+            home_team = self._normalize_team_name(row["home_team"])
+            away_team = self._normalize_team_name(row["away_team"])
+
+            home_impact = self.team_impact_cache.get(home_team, 0.0)
+            away_impact = self.team_impact_cache.get(away_team, 0.0)
+
+            home_impacts.append(home_impact)
+            away_impacts.append(away_impact)
+
+        df["home_lineup_impact"] = home_impacts
+        df["away_lineup_impact"] = away_impacts
+        df["lineup_impact_diff"] = df["home_lineup_impact"] - df["away_lineup_impact"]
+        df["home_missing_impact"] = 0.0
+        df["away_missing_impact"] = 0.0
+
+        logger.info(f"Added lineup impact features (fallback): {len([i for i in home_impacts if i != 0])} teams with data")
+        return df
+
     def generate_all_predictions(
         self,
         features: pd.DataFrame,
@@ -436,6 +616,14 @@ class MultiPredictor:
             results["consensus"] = self._generate_consensus_predictions(
                 results["edge"], results["ats"], features, odds
             )
+
+        # Stacking ensemble predictions (combines XGB + LightGBM with meta-learner)
+        if self.stacking_model is not None:
+            results["stacking"] = self._generate_stacking_predictions(features, odds)
+
+        # Matchup predictions (H2H, rivalries, style matchups)
+        if self.matchup_adjuster is not None and self.historical_games is not None:
+            results["matchup"] = self._generate_matchup_predictions(features, odds)
 
         return results
 
@@ -1097,6 +1285,305 @@ class MultiPredictor:
         logger.info(f"Generated consensus predictions: {consensus_bets} bets (both EDGE + ATS agree)")
         return predictions
 
+    def _generate_stacking_predictions(
+        self,
+        features: pd.DataFrame,
+        odds: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Generate predictions using stacked ensemble model.
+
+        The stacking model combines XGBoost and LightGBM base models with a
+        logistic regression meta-learner for improved probability calibration.
+        Also provides uncertainty estimates from base model disagreement.
+        """
+        if features.empty:
+            return pd.DataFrame()
+
+        if self.stacking_feature_cols is None:
+            logger.warning("No feature columns for stacking model")
+            return pd.DataFrame()
+
+        # Ensure all required features exist
+        features_copy = features.copy()
+        missing_cols = [c for c in self.stacking_feature_cols if c not in features_copy.columns]
+        for col in missing_cols:
+            features_copy[col] = 0
+
+        # Get stacking predictions
+        X = features_copy[self.stacking_feature_cols].fillna(0)
+        probs = self.stacking_model.predict_proba(X)
+        uncertainty = self.stacking_model.get_uncertainty(X)
+
+        predictions = features[["game_id", "commence_time", "home_team", "away_team"]].copy()
+        predictions["stack_home_prob"] = probs
+        predictions["stack_away_prob"] = 1 - probs
+        predictions["stack_uncertainty"] = uncertainty
+
+        # Add 90% credible intervals (using normal approximation)
+        # z-score for 90% CI is 1.645
+        z_90 = 1.645
+        predictions["ci_lower"] = np.clip(probs - z_90 * uncertainty, 0, 1)
+        predictions["ci_upper"] = np.clip(probs + z_90 * uncertainty, 0, 1)
+
+        # Add injury adjustments
+        if self.use_injuries and self.injury_builder:
+            predictions = self._add_injury_data(predictions)
+            if self.injury_adjuster:
+                # Adjust probabilities based on injuries
+                adj_probs = []
+                for _, row in predictions.iterrows():
+                    base_prob = row["stack_home_prob"]
+                    home_impact = row.get("home_injury_impact", 0)
+                    away_impact = row.get("away_injury_impact", 0)
+                    # Net impact: positive means home team healthier
+                    net_impact = away_impact - home_impact
+                    # Adjust probability (up to +/- 5% for major injuries)
+                    adj = min(max(net_impact * 0.02, -0.05), 0.05)
+                    adj_probs.append(min(max(base_prob + adj, 0.05), 0.95))
+                predictions["stack_home_prob_adj"] = adj_probs
+                predictions["stack_away_prob_adj"] = 1 - predictions["stack_home_prob_adj"]
+            else:
+                predictions["stack_home_prob_adj"] = predictions["stack_home_prob"]
+                predictions["stack_away_prob_adj"] = predictions["stack_away_prob"]
+        else:
+            predictions["stack_home_prob_adj"] = predictions["stack_home_prob"]
+            predictions["stack_away_prob_adj"] = predictions["stack_away_prob"]
+
+        # Merge with market odds
+        ml_odds = odds[odds["market"] == "moneyline"]
+        market_probs = self._get_market_consensus(ml_odds)
+        predictions = predictions.merge(market_probs, on="game_id", how="left")
+
+        # Calculate edge vs market
+        predictions["home_edge"] = predictions["stack_home_prob_adj"] - predictions["market_home_prob"]
+        predictions["away_edge"] = predictions["stack_away_prob_adj"] - predictions["market_away_prob"]
+
+        # Get best odds
+        best_odds = self._get_best_moneyline_odds(ml_odds)
+        predictions = predictions.merge(best_odds, on="game_id", how="left")
+
+        # Kelly sizing (reduce bet size when uncertainty is high)
+        def calc_stacking_kelly(row):
+            prob = row["stack_home_prob_adj"]
+            edge = row["home_edge"]
+            odds_val = row.get("best_home_odds")
+
+            # Skip if no edge or no odds
+            if edge < self.min_edge or pd.isna(odds_val):
+                return 0.0
+
+            # Base Kelly calculation
+            base_kelly = self.sizer.calculate_kelly(prob, odds_val)
+
+            # Reduce bet size when uncertainty is high (above 0.1)
+            uncertainty = row.get("stack_uncertainty", 0)
+            if uncertainty > 0.1:
+                uncertainty_penalty = 1.0 - min((uncertainty - 0.1) * 2, 0.5)
+                return base_kelly * uncertainty_penalty
+
+            return base_kelly
+
+        def calc_away_kelly(row):
+            prob = row["stack_away_prob_adj"]
+            edge = row["away_edge"]
+            odds_val = row.get("best_away_odds")
+
+            # Skip if no edge or no odds
+            if edge < self.min_edge or pd.isna(odds_val):
+                return 0.0
+
+            # Base Kelly calculation
+            base_kelly = self.sizer.calculate_kelly(prob, odds_val)
+
+            # Reduce bet size when uncertainty is high (above 0.1)
+            uncertainty = row.get("stack_uncertainty", 0)
+            if uncertainty > 0.1:
+                uncertainty_penalty = 1.0 - min((uncertainty - 0.1) * 2, 0.5)
+                return base_kelly * uncertainty_penalty
+
+            return base_kelly
+
+        predictions["home_kelly"] = predictions.apply(calc_stacking_kelly, axis=1)
+        predictions["away_kelly"] = predictions.apply(calc_away_kelly, axis=1)
+
+        # Bet recommendations (with uncertainty filter)
+        # Higher bar for uncertain predictions
+        predictions["bet_home"] = (
+            (predictions["home_edge"] >= self.min_edge) &
+            (predictions["stack_uncertainty"] < 0.15)  # Skip highly uncertain games
+        )
+        predictions["bet_away"] = (
+            (predictions["away_edge"] >= self.min_edge) &
+            (predictions["stack_uncertainty"] < 0.15)
+        )
+        predictions["bet_type"] = "stacking"
+
+        # Confidence level based on edge and uncertainty
+        def get_confidence(row):
+            if not row["bet_home"] and not row["bet_away"]:
+                return "NONE"
+            edge = max(row["home_edge"], row["away_edge"])
+            uncertainty = row["stack_uncertainty"]
+            if edge >= 0.08 and uncertainty < 0.05:
+                return "HIGH"
+            elif edge >= 0.05 and uncertainty < 0.10:
+                return "MEDIUM"
+            return "LOW"
+
+        predictions["confidence"] = predictions.apply(get_confidence, axis=1)
+
+        home_bets = predictions["bet_home"].sum()
+        away_bets = predictions["bet_away"].sum()
+        logger.info(f"Generated stacking predictions: {home_bets} home, {away_bets} away")
+
+        return predictions
+
+    def _generate_matchup_predictions(
+        self,
+        features: pd.DataFrame,
+        odds: pd.DataFrame,
+    ) -> pd.DataFrame:
+        """
+        Generate predictions using matchup analysis.
+
+        Uses historical head-to-head performance, rivalry intensity,
+        and style matchup factors to adjust base predictions.
+        """
+        if features.empty:
+            return pd.DataFrame()
+
+        predictions = features[["game_id", "commence_time", "home_team", "away_team"]].copy()
+
+        # Get matchup stats for each game
+        matchup_data = []
+        for _, row in features.iterrows():
+            home_team = row["home_team"]
+            away_team = row["away_team"]
+            game_date = pd.to_datetime(row["commence_time"])
+
+            try:
+                # Get matchup statistics
+                stats = self.matchup_builder.get_matchup_stats(
+                    home_team, away_team, game_date, self.historical_games
+                )
+
+                matchup_data.append({
+                    "game_id": row["game_id"],
+                    "h2h_home_wins": stats.h2h_record[0],
+                    "h2h_away_wins": stats.h2h_record[1],
+                    "h2h_margin": stats.avg_home_margin,
+                    "h2h_total": stats.avg_total_points,
+                    "h2h_sample": stats.sample_size,
+                    "rivalry_factor": stats.rivalry_factor,
+                    "is_rivalry": 1 if stats.rivalry_factor > 0.3 else 0,
+                })
+            except Exception as e:
+                logger.debug(f"Error getting matchup stats for {home_team} vs {away_team}: {e}")
+                matchup_data.append({
+                    "game_id": row["game_id"],
+                    "h2h_home_wins": 0,
+                    "h2h_away_wins": 0,
+                    "h2h_margin": 0.0,
+                    "h2h_total": 215.0,
+                    "h2h_sample": 0,
+                    "rivalry_factor": 0.0,
+                    "is_rivalry": 0,
+                })
+
+        # Merge matchup stats
+        predictions = predictions.merge(pd.DataFrame(matchup_data), on="game_id", how="left")
+
+        # Calculate H2H win rate (with bayesian prior toward 50%)
+        prior_games = 4  # Equivalent of 4 games at 50%
+        predictions["h2h_home_winrate"] = (
+            (predictions["h2h_home_wins"] + prior_games / 2) /
+            (predictions["h2h_home_wins"] + predictions["h2h_away_wins"] + prior_games)
+        )
+
+        # Calculate matchup edge factor (-1 to +1 scale)
+        # Positive = home team has H2H advantage
+        predictions["matchup_edge"] = (predictions["h2h_home_winrate"] - 0.5) * 2
+
+        # Scale by sample size confidence (more games = more confident)
+        predictions["sample_confidence"] = predictions["h2h_sample"].clip(0, 10) / 10
+        predictions["matchup_edge_adj"] = (
+            predictions["matchup_edge"] * predictions["sample_confidence"]
+        )
+
+        # Rivalry adjustment (rivalries tend to be closer games - reduce confidence)
+        predictions["rivalry_penalty"] = predictions["rivalry_factor"] * 0.1
+
+        # Merge with market odds
+        ml_odds = odds[odds["market"] == "moneyline"]
+        market_probs = self._get_market_consensus(ml_odds)
+        predictions = predictions.merge(market_probs, on="game_id", how="left")
+
+        # Best odds
+        best_ml = self._get_best_moneyline_odds(ml_odds)
+        predictions = predictions.merge(best_ml, on="game_id", how="left")
+
+        # Compute matchup-adjusted probability
+        # Start with market implied, then adjust based on matchup
+        predictions["matchup_home_prob"] = predictions["market_home_prob"].fillna(0.5)
+        predictions["matchup_away_prob"] = predictions["market_away_prob"].fillna(0.5)
+
+        # Apply matchup adjustment (up to 5% shift based on H2H)
+        max_shift = 0.05
+        shift = predictions["matchup_edge_adj"] * max_shift
+        predictions["matchup_home_prob"] = (predictions["matchup_home_prob"] + shift).clip(0.1, 0.9)
+        predictions["matchup_away_prob"] = 1 - predictions["matchup_home_prob"]
+
+        # Calculate edge vs market
+        predictions["home_edge"] = predictions["matchup_home_prob"] - predictions["market_home_prob"].fillna(0.5)
+        predictions["away_edge"] = predictions["matchup_away_prob"] - predictions["market_away_prob"].fillna(0.5)
+
+        # Determine bet recommendations
+        predictions["bet_home"] = (predictions["home_edge"] >= self.min_edge).astype(int)
+        predictions["bet_away"] = (predictions["away_edge"] >= self.min_edge).astype(int)
+
+        # Kelly sizing (reduced due to matchup-only signal)
+        def calc_matchup_kelly(row, is_away=False):
+            prob = row["matchup_away_prob"] if is_away else row["matchup_home_prob"]
+            edge = row["away_edge"] if is_away else row["home_edge"]
+            odds_val = row.get("best_away_odds") if is_away else row.get("best_home_odds")
+
+            if edge < self.min_edge or pd.isna(odds_val):
+                return 0.0
+
+            base_kelly = self.sizer.calculate_kelly(prob, odds_val)
+
+            # Reduce bet size for low sample sizes and rivalries
+            sample_penalty = 1.0 - (1.0 - row["sample_confidence"]) * 0.3
+            rivalry_penalty = 1.0 - row["rivalry_penalty"]
+
+            return base_kelly * sample_penalty * rivalry_penalty
+
+        predictions["home_kelly"] = predictions.apply(lambda r: calc_matchup_kelly(r, False), axis=1)
+        predictions["away_kelly"] = predictions.apply(lambda r: calc_matchup_kelly(r, True), axis=1)
+
+        # Confidence level based on H2H sample and rivalry
+        def get_confidence(row):
+            sample = row["h2h_sample"]
+            rivalry = row["is_rivalry"]
+            edge = max(abs(row["home_edge"]), abs(row["away_edge"]))
+
+            if sample >= 6 and edge >= 0.03 and not rivalry:
+                return "HIGH"
+            elif sample >= 3 and edge >= 0.02:
+                return "MEDIUM"
+            elif sample >= 1:
+                return "LOW"
+            return "NONE"
+
+        predictions["confidence"] = predictions.apply(get_confidence, axis=1)
+
+        home_bets = predictions["bet_home"].sum()
+        away_bets = predictions["bet_away"].sum()
+        logger.info(f"Generated matchup predictions: {home_bets} home, {away_bets} away")
+
+        return predictions
+
     def _add_injury_data(self, predictions: pd.DataFrame) -> pd.DataFrame:
         """Add injury information to predictions."""
         injury_data = []
@@ -1263,6 +1750,31 @@ class MultiPredictor:
                     elif row["bet_under"]:
                         print(f"    >>> BET UNDER at {row['best_under_odds']:+.0f} ({row['under_book']}) - Kelly: {row['under_kelly']:.1%}")
 
+            # Stacking ensemble
+            if "stacking" in predictions and not predictions["stacking"].empty:
+                stk = predictions["stacking"]
+                game = stk[stk["game_id"] == game_id]
+                if not game.empty:
+                    row = game.iloc[0]
+                    if not game_printed:
+                        print(f"\n{row['away_team']} @ {row['home_team']}")
+                        print(f"  Time: {row['commence_time']}")
+                        game_printed = True
+
+                    print(f"\n  STACKING ENSEMBLE:")
+                    print(f"    Model:  Home {row['stack_home_prob_adj']:.1%} | Away {row['stack_away_prob_adj']:.1%}")
+                    if 'market_home_prob' in row and pd.notna(row['market_home_prob']):
+                        print(f"    Market: Home {row['market_home_prob']:.1%} | Away {row['market_away_prob']:.1%}")
+                    print(f"    Edge:   Home {row['home_edge']:+.1%} | Away {row['away_edge']:+.1%}")
+                    print(f"    Uncertainty: {row['stack_uncertainty']:.3f} | Confidence: {row['confidence']}")
+
+                    if row["bet_home"]:
+                        book = row.get('home_book', 'N/A')
+                        print(f"    >>> BET HOME at {row['best_home_odds']:+.0f} ({book}) - Kelly: {row['home_kelly']:.1%}")
+                    elif row["bet_away"]:
+                        book = row.get('away_book', 'N/A')
+                        print(f"    >>> BET AWAY at {row['best_away_odds']:+.0f} ({book}) - Kelly: {row['away_kelly']:.1%}")
+
         # Summary
         print("\n" + "=" * 80)
         print("SUMMARY")
@@ -1286,6 +1798,11 @@ class MultiPredictor:
                 under_bets = df["bet_under"].sum()
                 count = over_bets + under_bets
                 print(f"  Totals: {count} bets ({over_bets} over, {under_bets} under)")
+            elif bet_type == "stacking":
+                home_bets = df["bet_home"].sum()
+                away_bets = df["bet_away"].sum()
+                count = home_bets + away_bets
+                print(f"  Stacking: {count} bets ({home_bets} home, {away_bets} away)")
             else:
                 count = 0
 

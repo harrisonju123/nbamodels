@@ -487,6 +487,47 @@ class InjuryFeatureBuilder:
         self.impact_calc.stats_cache.refresh()
         self._cache_time = now
 
+    def get_injured_player_ids(self, team: str) -> List[int]:
+        """
+        Get list of NBA API player IDs for injured players on a team.
+
+        Args:
+            team: Team abbreviation (e.g., 'LAL')
+
+        Returns:
+            List of NBA API player IDs for injured players
+        """
+        self.refresh_data()
+
+        if self._injuries_cache is None or self._injuries_cache.empty:
+            return []
+
+        # Get injured players for this team (Out or Doubtful)
+        team_injuries = self._injuries_cache[
+            (self._injuries_cache['team'] == team) &
+            (self._injuries_cache['status'].isin(['Out', 'Doubtful']))
+        ]
+
+        if team_injuries.empty:
+            return []
+
+        # Get NBA API player IDs by matching names
+        stats_df = self.impact_calc.stats_cache.refresh()
+        if stats_df is None or stats_df.empty:
+            return []
+
+        player_ids = []
+        for _, injury in team_injuries.iterrows():
+            player_name = injury['player_name']
+            # Match by player name (case-insensitive)
+            matched = stats_df[
+                stats_df['player_name'].str.lower() == player_name.lower()
+            ]
+            if not matched.empty:
+                player_ids.append(int(matched.iloc[0]['player_id']))
+
+        return player_ids
+
     def get_game_injury_features(
         self,
         home_team: str,

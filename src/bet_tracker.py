@@ -1203,6 +1203,197 @@ def get_performance_decay_metrics(recent_window: int = 50, historical_window: in
     }
 
 
+# =============================================================================
+# Regime Detection Integration
+# =============================================================================
+
+
+def get_regime_status() -> Dict:
+    """
+    Get current regime status using SeasonalRegimeDetector.
+
+    Loads settled bet history, populates the regime detector,
+    and returns the current regime classification with recommendations.
+
+    Returns:
+        Dictionary with regime info:
+        - regime: current regime (normal, volatile, edge_decay, hot_streak)
+        - should_pause: whether to pause betting
+        - pause_reason: reason if pausing recommended
+        - phase: current season phase
+        - metrics: rolling performance metrics
+        - alerts: list of active alerts
+    """
+    try:
+        from src.monitoring import SeasonalRegimeDetector, Regime
+    except ImportError:
+        return {
+            'regime': 'normal',
+            'should_pause': False,
+            'pause_reason': '',
+            'phase': 'unknown',
+            'metrics': {},
+            'alerts': [],
+            'error': 'Regime detection module not available',
+        }
+
+    # Get settled bets with CLV
+    conn = _get_connection()
+    try:
+        df = pd.read_sql_query("""
+            SELECT
+                id,
+                settled_at,
+                clv,
+                outcome,
+                profit,
+                bet_amount
+            FROM bets
+            WHERE outcome IS NOT NULL
+            ORDER BY settled_at ASC
+        """, conn)
+    finally:
+        conn.close()
+
+    if df.empty or len(df) < 10:
+        return {
+            'regime': 'normal',
+            'should_pause': False,
+            'pause_reason': '',
+            'phase': 'early_season',
+            'metrics': {
+                'total_bets': len(df),
+                'win_rate': 0,
+                'avg_clv': 0,
+            },
+            'alerts': [],
+            'message': f'Insufficient data ({len(df)} bets). Need at least 10 settled bets.',
+        }
+
+    # Initialize regime detector
+    detector = SeasonalRegimeDetector(
+        clv_threshold=0.0,  # Positive CLV is good
+        win_rate_threshold=0.524,  # ~-110 breakeven
+        lookback_window=min(50, len(df)),
+        min_samples_for_detection=10,
+    )
+
+    # Populate detector with bet history
+    for _, bet in df.iterrows():
+        # Calculate ROI for this bet
+        wager = bet['bet_amount'] or 100
+        roi = (bet['profit'] or 0) / wager if wager > 0 else 0
+        clv = bet['clv'] or 0
+        won = bet['outcome'] == 'win'
+        timestamp = pd.Timestamp(bet['settled_at']) if bet['settled_at'] else None
+
+        detector.add_performance_sample(
+            clv=clv,
+            win=won,
+            roi=roi,
+            timestamp=timestamp,
+        )
+
+    # Get regime analysis
+    current_regime = detector.get_current_regime()
+    should_pause, pause_reason = detector.should_pause_betting()
+    alerts = detector.detect_performance_decay()
+
+    # Calculate recent metrics
+    recent_bets = df.tail(min(50, len(df)))
+    wins = (recent_bets['outcome'] == 'win').sum()
+    losses = (recent_bets['outcome'] == 'loss').sum()
+
+    metrics = {
+        'total_bets': len(df),
+        'recent_bets': len(recent_bets),
+        'win_rate': wins / (wins + losses) if (wins + losses) > 0 else 0,
+        'avg_clv': recent_bets['clv'].mean() if recent_bets['clv'].notna().any() else 0,
+        'rolling_profit': recent_bets['profit'].sum() if recent_bets['profit'].notna().any() else 0,
+        'positive_clv_rate': (recent_bets['clv'] > 0).mean() if recent_bets['clv'].notna().any() else 0,
+    }
+
+    # Determine season phase (approximate based on current date)
+    from datetime import datetime
+    today = datetime.now()
+    # NBA season: Oct-Apr
+    if today.month in [10, 11]:
+        phase = 'early_season'
+    elif today.month in [12, 1, 2]:
+        phase = 'pre_allstar'
+    elif today.month in [3]:
+        phase = 'post_allstar'
+    else:
+        phase = 'playoff_push'
+
+    # Format alerts for display
+    alert_list = []
+    for alert in alerts:
+        alert_list.append({
+            'severity': alert.severity,
+            'message': alert.message,
+            'action': alert.recommended_action,
+        })
+
+    return {
+        'regime': current_regime.value,
+        'should_pause': should_pause,
+        'pause_reason': pause_reason,
+        'phase': phase,
+        'metrics': metrics,
+        'alerts': alert_list,
+        'n_alerts': len(alerts),
+        'regime_color': _get_regime_color(current_regime),
+    }
+
+
+def _get_regime_color(regime) -> str:
+    """Get display color for regime."""
+    from src.monitoring import Regime
+    colors = {
+        Regime.NORMAL: 'green',
+        Regime.VOLATILE: 'orange',
+        Regime.EDGE_DECAY: 'red',
+        Regime.HOT_STREAK: 'blue',
+    }
+    return colors.get(regime, 'gray')
+
+
+def get_regime_recommendation() -> str:
+    """
+    Get a human-readable recommendation based on current regime.
+
+    Returns:
+        Recommendation string for display in UI
+    """
+    status = get_regime_status()
+
+    regime = status['regime']
+    metrics = status.get('metrics', {})
+    win_rate = metrics.get('win_rate', 0)
+    avg_clv = metrics.get('avg_clv', 0)
+
+    if status['should_pause']:
+        return f"PAUSE BETTING: {status['pause_reason']}"
+
+    if regime == 'edge_decay':
+        return f"CAUTION: Edge decay detected. CLV: {avg_clv:.1%}, Win Rate: {win_rate:.1%}. Consider reducing bet sizes."
+
+    if regime == 'volatile':
+        return f"HIGH VOLATILITY: Performance swinging. Win Rate: {win_rate:.1%}. Use conservative sizing."
+
+    if regime == 'hot_streak':
+        return f"HOT STREAK: {win_rate:.1%} win rate, {avg_clv:.1%} CLV. Don't overextend - variance will regress."
+
+    # Normal regime
+    if avg_clv > 0.01:
+        return f"NORMAL: +CLV ({avg_clv:.1%}). Strategy performing well."
+    elif avg_clv > 0:
+        return f"NORMAL: Marginal +CLV ({avg_clv:.1%}). Continue monitoring."
+    else:
+        return f"NORMAL: Slight -CLV ({avg_clv:.1%}). Watch for decay signals."
+
+
 if __name__ == "__main__":
     # Test
     print("Bet History:")

@@ -89,6 +89,44 @@ def _get_connection() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_snapshots_lookup
         ON line_snapshots(game_id, bet_type, side, snapshot_time)
     """)
+    # Additional indexes for line movement queries
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_snapshots_game_time
+        ON line_snapshots(game_id, snapshot_time DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_snapshots_bookmaker
+        ON line_snapshots(game_id, bookmaker, snapshot_time DESC)
+    """)
+
+    # Create opening_lines table for tracking opening lines
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS opening_lines (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            bet_type TEXT NOT NULL,
+            side TEXT NOT NULL,
+            bookmaker TEXT NOT NULL,
+            first_seen_at TEXT NOT NULL,
+            opening_odds INTEGER,
+            opening_line REAL,
+            opening_implied_prob REAL,
+            opening_no_vig_prob REAL,
+            commence_time TEXT,
+            is_true_opener BOOLEAN DEFAULT 0,
+            UNIQUE(game_id, bet_type, side, bookmaker)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_opening_game ON opening_lines(game_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_opening_lookup
+        ON opening_lines(game_id, bet_type, side, bookmaker)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_opening_time ON opening_lines(first_seen_at)
+    """)
 
     # Migrate existing tables: add new columns if missing
     cursor = conn.execute("PRAGMA table_info(bets)")
@@ -122,6 +160,14 @@ def _get_connection() -> sqlite3.Connection:
         conn.execute("ALTER TABLE bets ADD COLUMN line_velocity REAL")
     if "max_clv_achieved" not in columns:
         conn.execute("ALTER TABLE bets ADD COLUMN max_clv_achieved REAL")
+
+    # Opening line tracking columns
+    if "opening_odds" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN opening_odds REAL")
+    if "opening_line" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN opening_line REAL")
+    if "opening_line_captured_at" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN opening_line_captured_at TEXT")
 
     conn.commit()
     return conn

@@ -126,6 +126,11 @@ class LineSnapshotCollector:
                 logger.info(f"No games within {self.collection_window}hr window")
                 return 0
 
+            # Capture opening lines for any new games
+            opener_count = self.capture_opening_lines(filtered)
+            if opener_count > 0:
+                logger.info(f"Captured {opener_count} new opening lines")
+
             # Save snapshots
             count = self.save_snapshot(filtered)
             logger.info(f"Saved {count} snapshot records")
@@ -309,6 +314,140 @@ class LineSnapshotCollector:
         except Exception as e:
             logger.error(f"Error inserting snapshot for {game_id}/{bookmaker}: {e}")
             return False
+
+    def capture_opening_lines(self, odds_df: pd.DataFrame) -> int:
+        """
+        Identify and store opening lines for new games.
+
+        A line is considered an "opener" if:
+        1. Game doesn't exist in opening_lines table yet
+        2. First snapshot for this game/bet_type/side/bookmaker
+        3. Captured within 48hrs of game appearing (is_true_opener = True if >24hrs before game)
+
+        Args:
+            odds_df: DataFrame from OddsAPIClient.get_current_odds()
+
+        Returns:
+            Count of new opening lines captured
+        """
+        OPENING_WINDOW_HOURS = 48  # Consider as opener if within 48hrs of first seen
+        TRUE_OPENER_THRESHOLD_HOURS = 24  # Mark as true opener if >24hrs before game
+
+        conn = self._get_connection()
+
+        # Get existing game+type+side+book combinations
+        existing = conn.execute("""
+            SELECT game_id || '|' || bet_type || '|' || side || '|' || bookmaker as key
+            FROM opening_lines
+        """).fetchall()
+        existing = {row[0] for row in existing}
+
+        count = 0
+        now = datetime.now(timezone.utc)
+
+        for _, row in odds_df.iterrows():
+            game_id = row['game_id']
+            bet_type = self._map_market_to_bet_type(row.get('market', ''))
+
+            if not bet_type:
+                continue
+
+            # Process each side
+            sides_data = self._extract_sides_data(row, bet_type)
+
+            for side, data in sides_data.items():
+                key = f"{game_id}|{bet_type}|{side}|{row['bookmaker']}"
+
+                if key not in existing:
+                    # New combination - capture as opener
+                    commence_time = pd.to_datetime(row.get('commence_time'), utc=True)
+                    hours_until_game = (commence_time - now).total_seconds() / 3600
+                    is_true_opener = hours_until_game >= TRUE_OPENER_THRESHOLD_HOURS
+
+                    try:
+                        conn.execute("""
+                            INSERT OR IGNORE INTO opening_lines (
+                                game_id, bet_type, side, bookmaker,
+                                first_seen_at, opening_odds, opening_line,
+                                opening_implied_prob, opening_no_vig_prob,
+                                commence_time, is_true_opener
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, (
+                            game_id, bet_type, side, row['bookmaker'],
+                            now.isoformat(), data.get('odds'), data.get('line'),
+                            data.get('implied_prob'), data.get('no_vig_prob'),
+                            str(row.get('commence_time')), is_true_opener
+                        ))
+                        count += 1
+                    except Exception as e:
+                        logger.error(f"Error inserting opener for {game_id}: {e}")
+
+        conn.commit()
+        conn.close()
+
+        return count
+
+    def _map_market_to_bet_type(self, market: str) -> Optional[str]:
+        """Map API market name to bet_type."""
+        mapping = {
+            'h2h': 'moneyline',
+            'moneyline': 'moneyline',
+            'spreads': 'spread',
+            'spread': 'spread',
+            'totals': 'totals',
+            'total': 'totals'
+        }
+        return mapping.get(market.lower())
+
+    def _extract_sides_data(self, row: pd.Series, bet_type: str) -> Dict[str, Dict]:
+        """Extract side-specific data from a row."""
+        sides = {}
+
+        if bet_type == 'moneyline':
+            if pd.notna(row.get('home_odds')):
+                sides['home'] = {
+                    'odds': int(row['home_odds']),
+                    'line': None,
+                    'implied_prob': row.get('home_implied_prob'),
+                    'no_vig_prob': row.get('home_no_vig_prob')
+                }
+            if pd.notna(row.get('away_odds')):
+                sides['away'] = {
+                    'odds': int(row['away_odds']),
+                    'line': None,
+                    'implied_prob': row.get('away_implied_prob'),
+                    'no_vig_prob': row.get('away_no_vig_prob')
+                }
+
+        elif bet_type == 'spread':
+            if pd.notna(row.get('line')) and pd.notna(row.get('odds')):
+                side = row.get('team', 'home')
+                sides[side] = {
+                    'odds': int(row['odds']),
+                    'line': float(row['line']),
+                    'implied_prob': row.get('implied_prob'),
+                    'no_vig_prob': row.get('no_vig_prob')
+                }
+
+        elif bet_type == 'totals':
+            line_val = row.get('line')
+            if pd.notna(line_val):
+                if pd.notna(row.get('over_odds')):
+                    sides['over'] = {
+                        'odds': int(row['over_odds']),
+                        'line': float(line_val),
+                        'implied_prob': row.get('over_implied_prob'),
+                        'no_vig_prob': row.get('over_no_vig_prob')
+                    }
+                if pd.notna(row.get('under_odds')):
+                    sides['under'] = {
+                        'odds': int(row['under_odds']),
+                        'line': float(line_val),
+                        'implied_prob': row.get('under_implied_prob'),
+                        'no_vig_prob': row.get('under_no_vig_prob')
+                    }
+
+        return sides
 
     def get_snapshot_stats(self) -> Dict:
         """Get statistics about collected snapshots."""

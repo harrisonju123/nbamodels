@@ -22,6 +22,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from dotenv import load_dotenv
 load_dotenv('.env')
 
+from loguru import logger
+
 # Time conversion helper
 def format_time_est(iso_time: str) -> str:
     """Convert ISO timestamp to EST formatted string."""
@@ -244,6 +246,217 @@ def run_backtest(games_df, model_data, test_season=2024):
     }
 
 
+def show_line_movement_page():
+    """Display line movement analysis and charts."""
+    st.header("📈 Line Movement Analysis")
+
+    from src.data.line_history import (
+        get_line_history, get_opening_line,
+        analyze_movement_pattern, detect_line_reversals
+    )
+    from src.bet_tracker import get_pending_bets
+
+    # Get games with pending bets or recent games
+    try:
+        pending_bets = get_pending_bets()
+    except Exception as e:
+        st.error(f"Error loading pending bets: {e}")
+        pending_bets = pd.DataFrame()
+
+    if pending_bets.empty:
+        st.info("📊 No pending bets to analyze. Line movement will show for games with placed bets.")
+        st.markdown("---")
+        st.markdown("**Tip:** Place some bets using the Predictions page to see line movement tracking here.")
+        return
+
+    # Game selector
+    game_options = {}
+    for _, bet in pending_bets.iterrows():
+        game_key = f"{bet['away_team']} @ {bet['home_team']}"
+        if game_key not in game_options:
+            game_options[game_key] = {
+                'game_id': bet['game_id'],
+                'home_team': bet['home_team'],
+                'away_team': bet['away_team'],
+                'commence_time': bet.get('commence_time', '')
+            }
+
+    if not game_options:
+        st.warning("No games available for line movement tracking.")
+        return
+
+    selected_game = st.selectbox("🏀 Select Game", list(game_options.keys()))
+    game_info = game_options[selected_game]
+    game_id = game_info['game_id']
+
+    # Bet type selector
+    bet_type = st.radio("📊 Market", ["spread", "totals", "moneyline"], horizontal=True)
+
+    st.markdown("---")
+
+    # === LINE MOVEMENT CHART ===
+    col1, col2 = st.columns([2, 1])
+
+    with col1:
+        st.subheader("📉 Line Movement Over Time")
+
+        # Get line history
+        try:
+            df = get_line_history(game_id, bet_type, 'home')
+        except Exception as e:
+            st.error(f"Error loading line history: {e}")
+            df = pd.DataFrame()
+
+        if df.empty:
+            st.warning("⏳ No line history available for this game yet. Snapshots are collected hourly.")
+        else:
+            # Create line chart
+            fig = go.Figure()
+
+            # Plot each bookmaker
+            for bookmaker in df['bookmaker'].unique():
+                book_df = df[df['bookmaker'] == bookmaker]
+
+                y_col = 'line' if bet_type in ['spread', 'totals'] else 'implied_prob'
+
+                fig.add_trace(go.Scatter(
+                    x=book_df['snapshot_time'],
+                    y=book_df[y_col],
+                    mode='lines+markers',
+                    name=bookmaker.title(),
+                    hovertemplate=(
+                        f"<b>{bookmaker.title()}</b><br>" +
+                        "Time: %{x}<br>" +
+                        f"{'Line' if bet_type in ['spread', 'totals'] else 'Prob'}: %{{y:.1f}}<br>" +
+                        "Odds: %{customdata}<extra></extra>"
+                    ),
+                    customdata=book_df['odds']
+                ))
+
+            # Add opening line reference
+            try:
+                opener = get_opening_line(game_id, bet_type)
+                if opener:
+                    open_val = opener.get('opening_line') or opener.get('opening_implied_prob')
+                    if open_val:
+                        fig.add_hline(
+                            y=open_val,
+                            line_dash="dash",
+                            line_color="yellow",
+                            annotation_text=f"Opener: {open_val:.1f}"
+                        )
+            except Exception as e:
+                logger.warning(f"Could not get opening line: {e}")
+
+            fig.update_layout(
+                xaxis_title="Time",
+                yaxis_title="Line" if bet_type in ['spread', 'totals'] else "Implied Probability (%)",
+                height=400,
+                legend=dict(orientation="h", yanchor="bottom", y=1.02),
+                hovermode="x unified"
+            )
+
+            st.plotly_chart(fig, use_container_width=True)
+
+    with col2:
+        st.subheader("📊 Movement Summary")
+
+        # Get pattern analysis
+        try:
+            pattern = analyze_movement_pattern(game_id, bet_type)
+
+            # Display metrics
+            st.metric("Pattern", pattern.pattern.replace('_', ' ').title())
+            st.metric("Total Movement", f"{pattern.total_movement:+.1f} pts")
+            st.metric("Velocity", f"{pattern.velocity:.2f} pts/hr")
+            st.metric("Reversals", pattern.reversals)
+
+            if pattern.sharp_direction:
+                st.metric("Sharp Direction", pattern.sharp_direction.upper())
+
+            # Confidence indicator
+            conf_color = "green" if pattern.confidence > 0.7 else "orange" if pattern.confidence > 0.4 else "red"
+            st.markdown(f"**Confidence:** <span style='color:{conf_color}'>{pattern.confidence:.0%}</span>",
+                       unsafe_allow_html=True)
+        except Exception as e:
+            st.error(f"Error analyzing pattern: {e}")
+
+    st.markdown("---")
+
+    # === MULTI-BOOKMAKER COMPARISON ===
+    st.subheader("📚 Bookmaker Comparison")
+
+    if not df.empty:
+        try:
+            # Get latest line from each bookmaker
+            latest = df.loc[df.groupby('bookmaker')['snapshot_time'].idxmax()]
+
+            if latest.empty:
+                st.info("No bookmaker data available for comparison")
+            else:
+                col_map = 'line' if bet_type in ['spread', 'totals'] else 'odds'
+
+                comparison_fig = go.Figure(data=[
+                    go.Bar(
+                        x=[b.title() for b in latest['bookmaker']],
+                        y=latest[col_map],
+                        text=[f"{v:.1f}" if bet_type != 'moneyline' else f"{int(v):+d}"
+                              for v in latest[col_map]],
+                        textposition='outside',
+                        marker_color=['green' if v == latest[col_map].min() else 'steelblue'
+                                     for v in latest[col_map]]
+                    )
+                ])
+
+                comparison_fig.update_layout(
+                    yaxis_title="Line" if bet_type != 'moneyline' else "Odds",
+                    height=300,
+                    showlegend=False
+                )
+
+                st.plotly_chart(comparison_fig, use_container_width=True)
+        except Exception as e:
+            st.error(f"Error creating bookmaker comparison: {e}")
+
+    # === REVERSALS DISPLAY ===
+    try:
+        reversals = detect_line_reversals(game_id, bet_type)
+        if reversals:
+            st.markdown("---")
+            st.subheader("⚠️ Line Reversals Detected")
+            for rev in reversals:
+                st.warning(
+                    f"**Reversal at {rev['reversal_time'][:16]}**: "
+                    f"From {rev['from_direction']} direction, "
+                    f"magnitude {rev['reversal_magnitude']:.1f} pts"
+                )
+    except Exception as e:
+        logger.warning(f"Error detecting reversals: {e}")
+
+    # === HISTORICAL MOVEMENT PATTERNS TABLE ===
+    if not df.empty:
+        st.markdown("---")
+        st.subheader("📜 Movement History")
+
+        # Create summary table
+        history_df = df.copy()
+        history_df['snapshot_time'] = pd.to_datetime(history_df['snapshot_time']).dt.strftime('%m/%d %H:%M')
+
+        display_cols = ['snapshot_time', 'bookmaker']
+        if bet_type in ['spread', 'totals']:
+            display_cols.extend(['line', 'odds', 'line_change'])
+        else:
+            display_cols.extend(['odds', 'implied_prob', 'odds_change'])
+
+        available_cols = [col for col in display_cols if col in history_df.columns]
+
+        st.dataframe(
+            history_df[available_cols].tail(20),
+            use_container_width=True,
+            hide_index=True
+        )
+
+
 def main():
     st.title("NBA Betting Model Dashboard")
 
@@ -252,6 +465,7 @@ def main():
     page = st.sidebar.radio("Go to", [
         "Predictions",
         "Bet Tracker",
+        "Line Movement",
         "Model Backtest",
         "Strategy Performance",
         "Analytics"
@@ -283,6 +497,8 @@ def main():
         show_predictions_page()
     elif page == "Bet Tracker":
         show_bet_tracker_page(games)
+    elif page == "Line Movement":
+        show_line_movement_page()
     elif page == "Model Backtest":
         show_backtest_page()
     elif page == "Strategy Performance":

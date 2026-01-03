@@ -585,6 +585,220 @@ class AlphaMonitor:
         return report
 
 
+    # ========== Market Signal Health Tracking ==========
+
+    def get_signal_performance(
+        self,
+        bets_df: pd.DataFrame,
+        signal_type: str,
+        window: int = 100
+    ) -> Dict:
+        """
+        Track performance of market microstructure signals.
+
+        Args:
+            bets_df: DataFrame with bet history
+            signal_type: 'steam', 'rlm', or 'money_flow'
+            window: Lookback window for analysis
+
+        Returns:
+            Dict with signal performance metrics
+        """
+        if bets_df.empty:
+            return {'error': 'No bets available'}
+
+        # Filter to recent bets with signal
+        recent_bets = bets_df.tail(window).copy()
+
+        # Check filters_passed column for signal presence
+        if 'filters_passed' not in recent_bets.columns:
+            return {'error': 'No filters_passed column'}
+
+        # Find bets where signal was used
+        signal_patterns = {
+            'steam': 'steam_aligned',
+            'rlm': 'rlm_aligned',
+            'money_flow': 'sharp_aligned'
+        }
+
+        pattern = signal_patterns.get(signal_type)
+        if not pattern:
+            return {'error': f'Unknown signal type: {signal_type}'}
+
+        # Filter bets where signal was applied
+        signal_bets = recent_bets[
+            recent_bets['filters_passed'].astype(str).str.contains(pattern, na=False)
+        ]
+
+        if signal_bets.empty:
+            return {
+                'signal_type': signal_type,
+                'bets_with_signal': 0,
+                'note': f'No bets with {signal_type} signal in last {window} bets'
+            }
+
+        # Calculate performance with signal
+        wins = (signal_bets['outcome'] == 'win').sum()
+        total = len(signal_bets)
+        win_rate = wins / total if total > 0 else 0
+
+        if 'clv' in signal_bets.columns:
+            avg_clv = signal_bets['clv'].mean()
+            positive_clv_rate = (signal_bets['clv'] > 0).sum() / total
+        else:
+            avg_clv = None
+            positive_clv_rate = None
+
+        if 'profit' in signal_bets.columns:
+            roi = signal_bets['profit'].sum() / total
+        else:
+            roi = None
+
+        # Compare to baseline (bets without signal)
+        no_signal_bets = recent_bets[
+            ~recent_bets['filters_passed'].astype(str).str.contains(pattern, na=False)
+        ]
+
+        if not no_signal_bets.empty:
+            baseline_win_rate = (no_signal_bets['outcome'] == 'win').sum() / len(no_signal_bets)
+            win_rate_lift = win_rate - baseline_win_rate
+        else:
+            baseline_win_rate = None
+            win_rate_lift = None
+
+        return {
+            'signal_type': signal_type,
+            'window': window,
+            'bets_with_signal': total,
+            'bets_without_signal': len(no_signal_bets),
+            'win_rate': win_rate,
+            'baseline_win_rate': baseline_win_rate,
+            'win_rate_lift': win_rate_lift,
+            'avg_clv': avg_clv,
+            'positive_clv_rate': positive_clv_rate,
+            'roi': roi,
+            'recommendation': self._interpret_signal_performance(
+                win_rate, avg_clv, win_rate_lift, total
+            )
+        }
+
+    def _interpret_signal_performance(
+        self,
+        win_rate: float,
+        avg_clv: Optional[float],
+        win_rate_lift: Optional[float],
+        sample_size: int
+    ) -> str:
+        """Interpret signal performance and provide recommendation."""
+        if sample_size < 20:
+            return "INSUFFICIENT_DATA - Need more bets to evaluate"
+
+        if win_rate > 0.55 and (avg_clv is None or avg_clv > 0.01):
+            return "STRONG - Signal performing well, continue using"
+        elif win_rate > 0.52 and (avg_clv is None or avg_clv > 0):
+            return "MODERATE - Signal showing positive results"
+        elif win_rate_lift and win_rate_lift > 0.03:
+            return "BENEFICIAL - Signal provides lift vs baseline"
+        elif win_rate < 0.50:
+            return "WEAK - Consider removing signal filter"
+        elif avg_clv and avg_clv < -0.01:
+            return "NEGATIVE_CLV - Signal may be harmful"
+        else:
+            return "NEUTRAL - Continue monitoring"
+
+    def get_all_signals_health(self, bets_df: pd.DataFrame, window: int = 100) -> Dict:
+        """
+        Get health report for all market signals.
+
+        Args:
+            bets_df: DataFrame with bet history
+            window: Lookback window
+
+        Returns:
+            Dict with health status for each signal type
+        """
+        signals = ['steam', 'rlm', 'money_flow']
+        health_report = {
+            'timestamp': datetime.now().isoformat(),
+            'window': window,
+            'signals': {}
+        }
+
+        for signal_type in signals:
+            health_report['signals'][signal_type] = self.get_signal_performance(
+                bets_df=bets_df,
+                signal_type=signal_type,
+                window=window
+            )
+
+        return health_report
+
+    def detect_signal_decay(
+        self,
+        bets_df: pd.DataFrame,
+        signal_type: str,
+        recent_window: int = 50,
+        baseline_window: int = 100
+    ) -> Dict:
+        """
+        Detect if a signal's performance is decaying.
+
+        Compares recent performance to baseline performance.
+
+        Args:
+            bets_df: DataFrame with bet history
+            signal_type: Type of signal to check
+            recent_window: Recent window for comparison
+            baseline_window: Baseline window
+
+        Returns:
+            Dict with decay analysis
+        """
+        if len(bets_df) < baseline_window:
+            return {'error': 'Insufficient data for decay detection'}
+
+        # Get baseline performance (full window)
+        baseline_perf = self.get_signal_performance(
+            bets_df=bets_df.tail(baseline_window),
+            signal_type=signal_type,
+            window=baseline_window
+        )
+
+        # Get recent performance
+        recent_perf = self.get_signal_performance(
+            bets_df=bets_df.tail(recent_window),
+            signal_type=signal_type,
+            window=recent_window
+        )
+
+        if 'error' in baseline_perf or 'error' in recent_perf:
+            return {'error': 'Could not calculate signal performance'}
+
+        # Check for decay
+        win_rate_decay = (recent_perf.get('win_rate', 0) -
+                         baseline_perf.get('win_rate', 0))
+
+        clv_decay = None
+        if recent_perf.get('avg_clv') and baseline_perf.get('avg_clv'):
+            clv_decay = recent_perf['avg_clv'] - baseline_perf['avg_clv']
+
+        # Determine if signal is decaying
+        is_decaying = (
+            win_rate_decay < -0.05 or  # Win rate dropped >5%
+            (clv_decay is not None and clv_decay < -0.02)  # CLV dropped >2%
+        )
+
+        return {
+            'signal_type': signal_type,
+            'is_decaying': is_decaying,
+            'win_rate_decay': win_rate_decay,
+            'clv_decay': clv_decay,
+            'recent_performance': recent_perf,
+            'baseline_performance': baseline_perf,
+            'recommendation': 'DISABLE_SIGNAL' if is_decaying else 'CONTINUE'
+        }
+
+
 def create_monitor_from_tracker(tracker_module) -> AlphaMonitor:
     """
     Factory function to create AlphaMonitor from existing bet tracker.

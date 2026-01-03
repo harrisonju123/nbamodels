@@ -72,6 +72,11 @@ class EdgeStrategy:
         small_spread_range: tuple = (-3, 3),
         teams_to_exclude: Optional[Set[str]] = None,
         use_team_filter: bool = False,
+        # Market microstructure signal filters
+        require_steam_alignment: bool = False,
+        require_rlm_alignment: bool = False,
+        require_sharp_alignment: bool = False,
+        min_steam_confidence: float = 0.7,
     ):
         """
         Initialize the edge strategy.
@@ -84,12 +89,22 @@ class EdgeStrategy:
             small_spread_range: Range for small spreads (default -3 to 3)
             teams_to_exclude: Set of team abbreviations to never bet on (default None)
             use_team_filter: If True, use default TEAMS_TO_EXCLUDE (default False)
+            require_steam_alignment: Only bet when steam move aligns with model (default False)
+            require_rlm_alignment: Only bet when RLM aligns with model (default False)
+            require_sharp_alignment: Only bet when money flow indicates sharp action (default False)
+            min_steam_confidence: Minimum steam confidence to require (default 0.7)
         """
         self.edge_threshold = edge_threshold
         self.require_no_b2b = require_no_b2b
         self.require_rest_aligns = require_rest_aligns
         self.small_spread_only = small_spread_only
         self.small_spread_range = small_spread_range
+
+        # Market signal filters
+        self.require_steam_alignment = require_steam_alignment
+        self.require_rlm_alignment = require_rlm_alignment
+        self.require_sharp_alignment = require_sharp_alignment
+        self.min_steam_confidence = min_steam_confidence
 
         # Team filter: teams we should never bet on
         if teams_to_exclude is not None:
@@ -109,6 +124,10 @@ class EdgeStrategy:
         home_b2b: bool = False,
         away_b2b: bool = False,
         rest_advantage: float = 0,
+        # Market microstructure signals (optional)
+        steam_signal=None,        # SteamMove object
+        rlm_signal=None,          # ReverseLineMove object
+        money_flow_signal=None,   # MoneyFlowSignal object
     ) -> BetSignal:
         """
         Evaluate a single game and return betting signal.
@@ -122,6 +141,9 @@ class EdgeStrategy:
             home_b2b: Is home team on back-to-back?
             away_b2b: Is away team on back-to-back?
             rest_advantage: Home rest days minus away rest days
+            steam_signal: Optional SteamMove signal for this game
+            rlm_signal: Optional ReverseLineMove signal for this game
+            money_flow_signal: Optional MoneyFlowSignal for this game
 
         Returns:
             BetSignal with recommendation
@@ -183,6 +205,44 @@ class EdgeStrategy:
                 bet_side = "PASS"
             else:
                 filters_passed.append("team_filter")
+
+        # Market microstructure signal filters
+        if bet_side != "PASS":
+            # Steam alignment filter
+            if self.require_steam_alignment and steam_signal:
+                # Check if steam direction matches our bet
+                steam_direction = steam_signal.direction.upper()
+                if steam_signal.confidence >= self.min_steam_confidence:
+                    if (bet_side == "HOME" and steam_direction == "HOME") or \
+                       (bet_side == "AWAY" and steam_direction == "AWAY"):
+                        filters_passed.append(f"steam_aligned_{steam_signal.confidence:.2f}")
+                    else:
+                        bet_side = "PASS"  # Steam contradicts model
+                else:
+                    bet_side = "PASS"  # Steam confidence too low
+
+            # RLM alignment filter
+            if self.require_rlm_alignment and rlm_signal and bet_side != "PASS":
+                # Check if RLM sharp side matches our bet
+                sharp_side = rlm_signal.sharp_side.upper()
+                if (bet_side == "HOME" and sharp_side == "HOME") or \
+                   (bet_side == "AWAY" and sharp_side == "AWAY"):
+                    filters_passed.append(f"rlm_aligned_{rlm_signal.confidence:.2f}")
+                else:
+                    bet_side = "PASS"  # RLM indicates sharp money on other side
+
+            # Sharp money alignment filter
+            if self.require_sharp_alignment and money_flow_signal and bet_side != "PASS":
+                # Check if sharp money indicator favors our side
+                if money_flow_signal.recommendation == "follow_sharp":
+                    flow_side = money_flow_signal.side.upper()
+                    if (bet_side == "HOME" and flow_side == "HOME") or \
+                       (bet_side == "AWAY" and flow_side == "AWAY"):
+                        filters_passed.append("sharp_aligned")
+                    else:
+                        bet_side = "PASS"  # Sharp money on other side
+                else:
+                    bet_side = "PASS"  # No clear sharp signal
 
         # Determine confidence level based on edge size and filters
         if bet_side != "PASS":

@@ -61,6 +61,35 @@ def _get_connection() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_bets_outcome ON bets(outcome)
     """)
 
+    # Create line_snapshots table for hourly odds tracking
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS line_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            snapshot_time TEXT NOT NULL,
+            bet_type TEXT NOT NULL,
+            side TEXT NOT NULL,
+            bookmaker TEXT NOT NULL,
+            odds INTEGER,
+            line REAL,
+            implied_prob REAL,
+            no_vig_prob REAL,
+            UNIQUE(game_id, snapshot_time, bet_type, side, bookmaker)
+        )
+    """)
+
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_snapshots_game ON line_snapshots(game_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_snapshots_time ON line_snapshots(snapshot_time)
+    """)
+    # Composite index for common lookup pattern (multi-snapshot CLV queries)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_snapshots_lookup
+        ON line_snapshots(game_id, bet_type, side, snapshot_time)
+    """)
+
     # Migrate existing tables: add new columns if missing
     cursor = conn.execute("PRAGMA table_info(bets)")
     columns = {row[1] for row in cursor.fetchall()}
@@ -75,6 +104,24 @@ def _get_connection() -> sqlite3.Connection:
         conn.execute("ALTER TABLE bets ADD COLUMN clv REAL")
     if "clv_updated_at" not in columns:
         conn.execute("ALTER TABLE bets ADD COLUMN clv_updated_at TEXT")
+
+    # Multi-snapshot CLV columns
+    if "booked_hours_before" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN booked_hours_before REAL")
+    if "optimal_book_time" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN optimal_book_time REAL")
+    if "clv_at_1hr" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN clv_at_1hr REAL")
+    if "clv_at_4hr" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN clv_at_4hr REAL")
+    if "clv_at_12hr" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN clv_at_12hr REAL")
+    if "clv_at_24hr" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN clv_at_24hr REAL")
+    if "line_velocity" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN line_velocity REAL")
+    if "max_clv_achieved" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN max_clv_achieved REAL")
 
     conn.commit()
     return conn
@@ -1392,6 +1439,358 @@ def get_regime_recommendation() -> str:
         return f"NORMAL: Marginal +CLV ({avg_clv:.1%}). Continue monitoring."
     else:
         return f"NORMAL: Slight -CLV ({avg_clv:.1%}). Watch for decay signals."
+
+
+# ========== Multi-Snapshot CLV Functions ==========
+
+
+def calculate_multi_snapshot_clv(
+    bet_id: str,
+    snapshot_times: List[str] = None
+) -> Dict[str, float]:
+    """
+    Calculate CLV at multiple time points before game.
+
+    Args:
+        bet_id: Bet identifier
+        snapshot_times: Optional list of time windows to check ['1hr', '4hr', '12hr', '24hr']
+
+    Returns:
+        Dict with clv_at_1hr, clv_at_4hr, etc.
+    """
+    if snapshot_times is None:
+        snapshot_times = ['1hr', '4hr', '12hr', '24hr']
+
+    conn = _get_connection()
+
+    # Get bet details
+    bet = conn.execute("""
+        SELECT * FROM bets WHERE id = ?
+    """, (bet_id,)).fetchone()
+
+    if not bet:
+        conn.close()
+        return {}
+
+    from datetime import datetime, timedelta, timezone
+
+    commence_time = datetime.fromisoformat(bet['commence_time'])
+    # Ensure timezone awareness
+    if commence_time.tzinfo is None:
+        commence_time = commence_time.replace(tzinfo=timezone.utc)
+    results = {}
+
+    for time_window in snapshot_times:
+        # Parse time window (e.g., '1hr', '4hr')
+        hours = int(time_window.replace('hr', ''))
+        snapshot_target = commence_time - timedelta(hours=hours)
+
+        # Find closest snapshot to target time (within 2 hour window)
+        window_start = snapshot_target - timedelta(hours=1)
+        window_end = snapshot_target + timedelta(hours=1)
+
+        snapshots = conn.execute("""
+            SELECT odds, line FROM line_snapshots
+            WHERE game_id = ?
+            AND bet_type = ?
+            AND side = ?
+            AND snapshot_time BETWEEN ? AND ?
+            ORDER BY ABS(JULIANDAY(snapshot_time) - JULIANDAY(?))
+            LIMIT 1
+        """, (
+            bet['game_id'],
+            bet['bet_type'],
+            bet['bet_side'],
+            window_start.isoformat(),
+            window_end.isoformat(),
+            snapshot_target.isoformat()
+        )).fetchone()
+
+        if snapshots and bet['closing_odds'] is not None:
+            # Calculate CLV using calculate_clv function defined in this module
+            clv = calculate_clv(
+                opening_odds=snapshots['odds'],
+                closing_odds=bet['closing_odds'],
+                opening_line=snapshots['line'],
+                closing_line=bet['closing_line'],
+                bet_type=bet['bet_type']
+            )
+            results[f'clv_at_{time_window}'] = clv
+        else:
+            results[f'clv_at_{time_window}'] = None
+
+    conn.close()
+    return results
+
+
+def analyze_optimal_booking_time(
+    bet_type: str,
+    bet_side: str = None,
+    lookback_days: int = 90
+) -> Dict:
+    """
+    Analyze historical bets to find optimal booking timing.
+
+    Args:
+        bet_type: 'moneyline', 'spread', or 'totals'
+        bet_side: Optional filter by side
+        lookback_days: Days of history to analyze
+
+    Returns:
+        - optimal_hours_before: Best time to book this bet type
+        - avg_clv_by_hour: CLV breakdown by booking window
+        - recommendation: 'book_early', 'book_late', 'neutral'
+    """
+    conn = _get_connection()
+
+    from datetime import datetime, timedelta
+    cutoff_date = (datetime.now() - timedelta(days=lookback_days)).isoformat()
+
+    # Get bets with multi-snapshot CLV
+    query = """
+        SELECT
+            booked_hours_before,
+            clv_at_1hr,
+            clv_at_4hr,
+            clv_at_12hr,
+            clv_at_24hr,
+            clv,
+            outcome
+        FROM bets
+        WHERE bet_type = ?
+        AND logged_at >= ?
+        AND clv IS NOT NULL
+    """
+    params = [bet_type, cutoff_date]
+
+    if bet_side:
+        query += " AND bet_side = ?"
+        params.append(bet_side)
+
+    df = pd.read_sql_query(query, conn, params=params)
+    conn.close()
+
+    if df.empty:
+        return {
+            "optimal_hours_before": None,
+            "avg_clv_by_hour": {},
+            "recommendation": "insufficient_data"
+        }
+
+    # Calculate average CLV by time window
+    avg_clv_by_hour = {}
+    for col in ['clv_at_1hr', 'clv_at_4hr', 'clv_at_12hr', 'clv_at_24hr']:
+        if col in df.columns:
+            hour = col.replace('clv_at_', '').replace('hr', '')
+            avg_clv_by_hour[int(hour)] = df[col].mean()
+
+    # Find optimal timing
+    if avg_clv_by_hour:
+        optimal_hours = max(avg_clv_by_hour, key=avg_clv_by_hour.get)
+        optimal_clv = avg_clv_by_hour[optimal_hours]
+
+        # Recommendation logic
+        if optimal_hours >= 12:
+            recommendation = "book_early"
+        elif optimal_hours <= 4:
+            recommendation = "book_late"
+        else:
+            recommendation = "neutral"
+    else:
+        optimal_hours = None
+        recommendation = "insufficient_data"
+
+    return {
+        "optimal_hours_before": optimal_hours,
+        "avg_clv_by_hour": avg_clv_by_hour,
+        "recommendation": recommendation,
+        "sample_size": len(df)
+    }
+
+
+def calculate_line_velocity(
+    game_id: str,
+    bet_type: str,
+    bet_side: str,
+    window_hours: int = 4
+) -> Optional[float]:
+    """
+    Calculate line movement velocity (points/hour or prob%/hour).
+
+    Args:
+        game_id: Game identifier
+        bet_type: Type of bet
+        bet_side: Side of bet
+        window_hours: Time window for velocity calculation
+
+    Returns:
+        Line velocity (positive = moving against us, negative = moving in our favor)
+        None if insufficient data
+    """
+    conn = _get_connection()
+
+    from datetime import datetime, timedelta
+
+    # Get snapshots for this game
+    snapshots = pd.read_sql_query("""
+        SELECT snapshot_time, odds, line
+        FROM line_snapshots
+        WHERE game_id = ?
+        AND bet_type = ?
+        AND side = ?
+        ORDER BY snapshot_time DESC
+        LIMIT 10
+    """, conn, params=(game_id, bet_type, bet_side))
+
+    conn.close()
+
+    if len(snapshots) < 2:
+        return None
+
+    # Calculate velocity over window
+    recent = snapshots.iloc[0]
+    older = snapshots[snapshots['snapshot_time'] <=
+                      (datetime.fromisoformat(recent['snapshot_time']) -
+                       timedelta(hours=window_hours)).isoformat()]
+
+    if older.empty:
+        return None
+
+    older_snap = older.iloc[0]
+
+    # For spreads/totals, use line movement
+    if bet_type in ['spread', 'totals'] and recent['line'] and older_snap['line']:
+        line_change = recent['line'] - older_snap['line']
+        hours_diff = (datetime.fromisoformat(recent['snapshot_time']) -
+                     datetime.fromisoformat(older_snap['snapshot_time'])).total_seconds() / 3600
+
+        if hours_diff > 0:
+            return line_change / hours_diff
+
+    # For moneyline, use implied probability change
+    if recent['odds'] and older_snap['odds']:
+        # Use american_to_prob function defined in this module
+        recent_prob = american_to_prob(recent['odds'])
+        older_prob = american_to_prob(older_snap['odds'])
+        prob_change = recent_prob - older_prob
+
+        hours_diff = (datetime.fromisoformat(recent['snapshot_time']) -
+                     datetime.fromisoformat(older_snap['snapshot_time'])).total_seconds() / 3600
+
+        if hours_diff > 0:
+            return prob_change / hours_diff
+
+    return None
+
+
+def get_enhanced_clv_summary() -> Dict:
+    """
+    Extended CLV analysis including:
+    - CLV by booking timing window
+    - CLV by bookmaker
+    - Optimal booking recommendations
+    - Line movement velocity correlations
+    """
+    conn = _get_connection()
+
+    # Basic CLV summary
+    basic_summary = get_clv_summary()
+
+    # CLV by time window
+    time_window_query = """
+        SELECT
+            AVG(clv_at_1hr) as avg_clv_1hr,
+            AVG(clv_at_4hr) as avg_clv_4hr,
+            AVG(clv_at_12hr) as avg_clv_12hr,
+            AVG(clv_at_24hr) as avg_clv_24hr,
+            AVG(line_velocity) as avg_line_velocity,
+            AVG(max_clv_achieved) as avg_max_clv
+        FROM bets
+        WHERE clv IS NOT NULL
+    """
+    time_windows = conn.execute(time_window_query).fetchone()
+
+    # CLV by bookmaker
+    bookmaker_query = """
+        SELECT
+            bookmaker,
+            COUNT(*) as count,
+            AVG(clv) as avg_clv,
+            SUM(CASE WHEN clv > 0 THEN 1 ELSE 0 END) as positive_clv_count
+        FROM bets
+        WHERE clv IS NOT NULL AND bookmaker IS NOT NULL
+        GROUP BY bookmaker
+        ORDER BY avg_clv DESC
+    """
+    bookmaker_df = pd.read_sql_query(bookmaker_query, conn)
+
+    # Velocity correlation with outcome
+    velocity_query = """
+        SELECT
+            AVG(CASE WHEN outcome = 'win' THEN line_velocity ELSE NULL END) as avg_velocity_wins,
+            AVG(CASE WHEN outcome = 'loss' THEN line_velocity ELSE NULL END) as avg_velocity_losses
+        FROM bets
+        WHERE line_velocity IS NOT NULL AND outcome IS NOT NULL
+    """
+    velocity_corr = conn.execute(velocity_query).fetchone()
+
+    conn.close()
+
+    return {
+        **basic_summary,
+        "clv_by_time_window": {
+            "1hr": time_windows['avg_clv_1hr'] if time_windows['avg_clv_1hr'] else None,
+            "4hr": time_windows['avg_clv_4hr'] if time_windows['avg_clv_4hr'] else None,
+            "12hr": time_windows['avg_clv_12hr'] if time_windows['avg_clv_12hr'] else None,
+            "24hr": time_windows['avg_clv_24hr'] if time_windows['avg_clv_24hr'] else None,
+        },
+        "avg_line_velocity": time_windows['avg_line_velocity'] if time_windows['avg_line_velocity'] else None,
+        "avg_max_clv_achieved": time_windows['avg_max_clv'] if time_windows['avg_max_clv'] else None,
+        "clv_by_bookmaker": bookmaker_df.to_dict('records'),
+        "velocity_correlation": {
+            "wins": velocity_corr['avg_velocity_wins'] if velocity_corr['avg_velocity_wins'] else None,
+            "losses": velocity_corr['avg_velocity_losses'] if velocity_corr['avg_velocity_losses'] else None
+        }
+    }
+
+
+# ========== Odds Conversion Helper Functions ==========
+
+
+def american_to_implied_prob(odds: float) -> float:
+    """
+    Convert American odds to implied probability (includes bookmaker vig).
+
+    Args:
+        odds: American odds (e.g., +150, -110)
+
+    Returns:
+        Implied probability (0 to 1)
+
+    Examples:
+        >>> american_to_implied_prob(+150)  # Underdog
+        0.400  # 40% implied probability
+        >>> american_to_implied_prob(-150)  # Favorite
+        0.600  # 60% implied probability
+
+    Note:
+        This includes the bookmaker's vig (overround). For true probabilities,
+        use no-vig probabilities from the odds API when available.
+    """
+    if odds > 0:
+        return 100 / (odds + 100)
+    else:
+        return abs(odds) / (abs(odds) + 100)
+
+
+# Alias for backward compatibility
+def american_to_prob(odds: float) -> float:
+    """
+    Deprecated: Use american_to_implied_prob() instead.
+
+    Convert American odds to implied probability (includes vig).
+    """
+    return american_to_implied_prob(odds)
 
 
 if __name__ == "__main__":

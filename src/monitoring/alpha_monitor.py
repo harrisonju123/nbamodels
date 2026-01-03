@@ -582,7 +582,99 @@ class AlphaMonitor:
         if not edge_analysis.empty:
             report['edge_analysis'] = edge_analysis.to_dict('records')
 
+        # Enhanced CLV analytics
+        report['clv_analysis'] = self._get_enhanced_clv_analysis(bets_df)
+
         return report
+
+    def _get_enhanced_clv_analysis(self, bets_df: pd.DataFrame) -> Dict:
+        """
+        Get enhanced CLV analytics including multi-snapshot, timing, and velocity.
+
+        Args:
+            bets_df: DataFrame with bet history
+
+        Returns:
+            Dict with comprehensive CLV analytics
+        """
+        analysis = {
+            'clv_by_time_window': {},
+            'optimal_booking': {},
+            'velocity_correlation': {},
+            'snapshot_coverage': {},
+        }
+
+        # Import required functions
+        try:
+            from src.bet_tracker import get_enhanced_clv_summary
+            from src.data.line_history import LineHistoryManager
+
+            # Get CLV by time window
+            summary = get_enhanced_clv_summary()
+            if summary and 'clv_by_time_window' in summary:
+                analysis['clv_by_time_window'] = summary['clv_by_time_window']
+
+            # Get optimal booking times for each bet type/side
+            manager = LineHistoryManager()
+
+            for bet_type in ['spread', 'moneyline', 'totals']:
+                for bet_side in ['home', 'away']:
+                    try:
+                        optimal = manager.analyze_optimal_booking_time(
+                            bet_type=bet_type,
+                            bet_side=bet_side
+                        )
+                        if optimal:
+                            key = f"{bet_type}_{bet_side}"
+                            analysis['optimal_booking'][key] = {
+                                'optimal_hours_before': optimal.get('optimal_hours_before'),
+                                'avg_clv_at_optimal': optimal.get('avg_clv_at_optimal')
+                            }
+                    except Exception as e:
+                        logger.debug(f"Could not get optimal timing for {bet_type}/{bet_side}: {e}")
+
+            # Calculate velocity correlation
+            # Filter to bets with both CLV and velocity data
+            velocity_bets = bets_df[
+                bets_df['line_velocity'].notna() &
+                bets_df['clv'].notna()
+            ].copy()
+
+            if len(velocity_bets) >= 10:
+                from scipy.stats import pearsonr
+
+                try:
+                    corr, p_value = pearsonr(
+                        velocity_bets['line_velocity'],
+                        velocity_bets['clv']
+                    )
+
+                    analysis['velocity_correlation'] = {
+                        'correlation': float(corr),
+                        'p_value': float(p_value),
+                        'significant': p_value < 0.05,
+                        'n_samples': len(velocity_bets)
+                    }
+                except Exception as e:
+                    logger.debug(f"Could not calculate velocity correlation: {e}")
+
+            # Calculate average snapshot coverage
+            coverage_bets = bets_df[bets_df['snapshot_coverage'].notna()]
+
+            if len(coverage_bets) > 0:
+                analysis['snapshot_coverage'] = {
+                    'average': float(coverage_bets['snapshot_coverage'].mean()),
+                    'median': float(coverage_bets['snapshot_coverage'].median()),
+                    'bets_with_full_coverage': int((coverage_bets['snapshot_coverage'] >= 0.75).sum()),
+                    'total_bets': len(coverage_bets)
+                }
+
+        except ImportError as e:
+            logger.warning(f"Could not import CLV analysis modules: {e}")
+        except Exception as e:
+            logger.warning(f"Error in enhanced CLV analysis: {e}")
+
+        return analysis
 
 
     # ========== Market Signal Health Tracking ==========

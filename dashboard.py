@@ -446,11 +446,15 @@ def aggregate_unified_signals(all_predictions: dict) -> pd.DataFrame:
                         ml_home_models.append('Stack')
                         ml_probs.append(r.get('stack_home_prob_adj', 0.5))
                         ml_kellys.append(r.get('home_kelly', 0))
+                        if pd.notna(r.get('best_home_odds')):
+                            ml_odds_home.append(r.get('best_home_odds'))
                     elif r.get('bet_away'):
                         ml_votes_away += 1
                         ml_away_models.append('Stack')
                         ml_probs.append(r.get('stack_away_prob_adj', 0.5))
                         ml_kellys.append(r.get('away_kelly', 0))
+                        if pd.notna(r.get('best_away_odds')):
+                            ml_odds_away.append(r.get('best_away_odds'))
 
         # Matchup model (only if positive ROI)
         if POSITIVE_ROI_MODELS.get('matchup', False):
@@ -503,11 +507,15 @@ def aggregate_unified_signals(all_predictions: dict) -> pd.DataFrame:
                         ml_home_models.append('Edge')
                         ml_probs.append(r.get('edge_home_prob', 0.5))
                         ml_kellys.append(r.get('home_kelly', 0))
+                        if pd.notna(r.get('best_home_odds')):
+                            ml_odds_home.append(r.get('best_home_odds'))
                     elif r.get('bet_away'):
                         ml_votes_away += 1
                         ml_away_models.append('Edge')
                         ml_probs.append(r.get('edge_away_prob', 0.5))
                         ml_kellys.append(r.get('away_kelly', 0))
+                        if pd.notna(r.get('best_away_odds')):
+                            ml_odds_away.append(r.get('best_away_odds'))
 
         # Determine ML bet direction
         if ml_votes_home > ml_votes_away and ml_votes_home >= 2:

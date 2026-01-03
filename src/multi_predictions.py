@@ -149,6 +149,17 @@ class MultiPredictor:
             except Exception as e:
                 logger.warning(f"Could not load stacking model: {e}")
 
+        # Initialize Bayesian meta-learner for true posterior uncertainty
+        self.bayesian_model = None
+        bayesian_model_path = "models/bayesian_meta.pkl"
+        if os.path.exists(bayesian_model_path):
+            try:
+                from src.models.bayesian import BayesianLinearModel
+                self.bayesian_model = BayesianLinearModel.load(bayesian_model_path)
+                logger.info("Loaded Bayesian meta-learner for posterior uncertainty")
+            except Exception as e:
+                logger.warning(f"Could not load Bayesian model: {e}")
+
         # Initialize matchup adjuster for H2H and rivalry analysis
         self.matchup_adjuster = None
         self.matchup_builder = None
@@ -753,6 +764,83 @@ class MultiPredictor:
             predictions["expected_diff"] = predictions["base_expected_diff"]
             predictions["injury_spread_adj"] = 0.0
 
+        # Apply RAPM-based lineup adjustment to spread predictions
+        # Each point of RAPM missing impact ≈ 0.8 points on spread (calibrated constant)
+        RAPM_TO_SPREAD = 0.8
+
+        # Validate lineup features are available
+        required_cols = ["game_id", "home_missing_impact", "away_missing_impact"]
+        missing_cols = [c for c in required_cols if c not in features.columns]
+
+        if missing_cols:
+            logger.warning(f"Missing lineup features: {missing_cols}, skipping RAPM adjustment")
+            predictions["rapm_adjustment"] = 0.0
+            predictions["home_missing_impact"] = 0.0
+            predictions["away_missing_impact"] = 0.0
+        else:
+            # Merge lineup impact features from features DataFrame
+            lineup_features = features[required_cols]
+
+            # Validate game_id uniqueness
+            if lineup_features["game_id"].duplicated().any():
+                logger.error("Duplicate game_ids in lineup features, skipping RAPM adjustment")
+                predictions["rapm_adjustment"] = 0.0
+                predictions["home_missing_impact"] = 0.0
+                predictions["away_missing_impact"] = 0.0
+            else:
+                n_before = len(predictions)
+                predictions = predictions.merge(lineup_features, on="game_id", how="left")
+
+                # Validate merge didn't create duplicates
+                if len(predictions) != n_before:
+                    logger.error(
+                        f"Merge created duplicates: {n_before} -> {len(predictions)} rows, "
+                        "rolling back RAPM adjustment"
+                    )
+                    # This shouldn't happen, but if it does, we need to handle it
+                    predictions = predictions.drop_duplicates(subset=["game_id"], keep="first")
+                    predictions["rapm_adjustment"] = 0.0
+                else:
+                    # Fill NaN with 0 if lineup features not available for some games
+                    predictions["home_missing_impact"] = predictions["home_missing_impact"].fillna(0)
+                    predictions["away_missing_impact"] = predictions["away_missing_impact"].fillna(0)
+
+                    # Calculate RAPM adjustment
+                    # Positive adjustment hurts home team (their players are out)
+                    predictions["rapm_adjustment"] = (
+                        (predictions["home_missing_impact"] - predictions["away_missing_impact"]) * RAPM_TO_SPREAD
+                    ).clip(-10.0, 10.0)  # Cap at ±10 points
+
+                    # Apply RAPM adjustment to expected_diff
+                    predictions["expected_diff"] = predictions["expected_diff"] - predictions["rapm_adjustment"]
+
+                    # Log RAPM adjustments
+                    non_zero_rapm = predictions[predictions["rapm_adjustment"] != 0]
+                    if not non_zero_rapm.empty:
+                        logger.info(
+                            f"Applied RAPM spread adjustments: "
+                            f"avg={predictions['rapm_adjustment'].mean():.2f}, "
+                            f"games with adjustment={len(non_zero_rapm)}"
+                        )
+
+                        # Check for potential double-counting with injury adjustments
+                        if self.use_injuries and self.injury_builder and self.injury_adjuster:
+                            both_adjusted = (
+                                (predictions["injury_spread_adj"].abs() > 0.1) &
+                                (predictions["rapm_adjustment"].abs() > 0.1)
+                            )
+                            if both_adjusted.any():
+                                logger.warning(
+                                    f"{both_adjusted.sum()} games have both injury ({predictions.loc[both_adjusted, 'injury_spread_adj'].abs().mean():.1f} pts) "
+                                    f"and RAPM ({predictions.loc[both_adjusted, 'rapm_adjustment'].abs().mean():.1f} pts) adjustments. "
+                                    "Verify these are complementary (injury uses ESPN data, RAPM uses player impact), not duplicative."
+                                )
+                    else:
+                        logger.info(
+                            "No RAPM adjustments applied (all missing impact values are zero). "
+                            "Verify lineup features are being generated correctly."
+                        )
+
         # Calculate cover probability for each game's spread
         predictions["model_cover_prob"] = predictions.apply(
             lambda r: self.spread_model.predict_spread_prob(
@@ -1316,15 +1404,65 @@ class MultiPredictor:
         uncertainty = self.stacking_model.get_uncertainty(X)
 
         predictions = features[["game_id", "commence_time", "home_team", "away_team"]].copy()
-        predictions["stack_home_prob"] = probs
-        predictions["stack_away_prob"] = 1 - probs
+        # Note: stacking model returns P(away_win), so invert for home_prob
+        predictions["stack_home_prob"] = 1 - probs
+        predictions["stack_away_prob"] = probs
         predictions["stack_uncertainty"] = uncertainty
 
-        # Add 90% credible intervals (using normal approximation)
-        # z-score for 90% CI is 1.645
-        z_90 = 1.645
-        predictions["ci_lower"] = np.clip(probs - z_90 * uncertainty, 0, 1)
-        predictions["ci_upper"] = np.clip(probs + z_90 * uncertainty, 0, 1)
+        # Add 90% credible intervals
+        # Try to use true Bayesian posterior if available, otherwise use normal approximation
+        if self.bayesian_model is not None:
+            try:
+                # Validate stacking model has required method
+                if not hasattr(self.stacking_model, 'get_base_predictions'):
+                    raise AttributeError("Stacking model missing get_base_predictions method")
+
+                # Use Bayesian model on base model predictions to get true posterior CI
+                # Get base model predictions as features for Bayesian model
+                base_preds = self.stacking_model.get_base_predictions(X)
+
+                # Validate shape before creating DataFrame
+                expected_n_models = len(self.stacking_model.base_models)
+                if base_preds.shape[1] != expected_n_models:
+                    raise ValueError(
+                        f"Expected {expected_n_models} base predictions, got {base_preds.shape[1]}"
+                    )
+
+                base_preds_df = pd.DataFrame(
+                    base_preds,
+                    columns=[f"{m.name}_pred" for m in self.stacking_model.base_models]
+                )
+
+                # Get true Bayesian credible intervals
+                ci_lower, ci_upper = self.bayesian_model.get_credible_intervals(base_preds_df, alpha=0.10)
+                predictions["ci_lower"] = ci_lower
+                predictions["ci_upper"] = ci_upper
+
+                # Also get Bayesian uncertainty for Kelly sizing
+                bayesian_uncertainty = self.bayesian_model.get_uncertainty(base_preds_df)
+                predictions["bayesian_uncertainty"] = bayesian_uncertainty
+
+                logger.info("Using true Bayesian credible intervals")
+            except (AttributeError, ValueError) as e:
+                logger.warning(f"Stacking model incompatible with Bayesian CI: {e}")
+                # Fall back to normal approximation (inverted for home_prob)
+                z_90 = 1.645
+                home_probs = 1 - probs
+                predictions["ci_lower"] = np.clip(home_probs - z_90 * uncertainty, 0, 1)
+                predictions["ci_upper"] = np.clip(home_probs + z_90 * uncertainty, 0, 1)
+            except Exception as e:
+                logger.warning(f"Bayesian CI failed, using approximation: {e}")
+                # Fall back to normal approximation (inverted for home_prob)
+                z_90 = 1.645
+                home_probs = 1 - probs
+                predictions["ci_lower"] = np.clip(home_probs - z_90 * uncertainty, 0, 1)
+                predictions["ci_upper"] = np.clip(home_probs + z_90 * uncertainty, 0, 1)
+        else:
+            # Fall back to normal approximation if no Bayesian model (inverted for home_prob)
+            z_90 = 1.645
+            home_probs = 1 - probs
+            predictions["ci_lower"] = np.clip(home_probs - z_90 * uncertainty, 0, 1)
+            predictions["ci_upper"] = np.clip(home_probs + z_90 * uncertainty, 0, 1)
 
         # Add injury adjustments
         if self.use_injuries and self.injury_builder:
@@ -1376,11 +1514,14 @@ class MultiPredictor:
             # Base Kelly calculation
             base_kelly = self.sizer.calculate_kelly(prob, odds_val)
 
-            # Reduce bet size when uncertainty is high (above 0.1)
-            uncertainty = row.get("stack_uncertainty", 0)
-            if uncertainty > 0.1:
-                uncertainty_penalty = 1.0 - min((uncertainty - 0.1) * 2, 0.5)
-                return base_kelly * uncertainty_penalty
+            # Use Bayesian uncertainty if available, otherwise use model disagreement
+            uncertainty = row.get("bayesian_uncertainty", row.get("stack_uncertainty", 0))
+
+            # More principled uncertainty penalty using posterior variance
+            if uncertainty > 0.05:
+                # Scale bet inversely with uncertainty squared (variance)
+                confidence = max(0.1, 1.0 - (uncertainty ** 2) * 10)
+                return base_kelly * confidence
 
             return base_kelly
 
@@ -1396,11 +1537,14 @@ class MultiPredictor:
             # Base Kelly calculation
             base_kelly = self.sizer.calculate_kelly(prob, odds_val)
 
-            # Reduce bet size when uncertainty is high (above 0.1)
-            uncertainty = row.get("stack_uncertainty", 0)
-            if uncertainty > 0.1:
-                uncertainty_penalty = 1.0 - min((uncertainty - 0.1) * 2, 0.5)
-                return base_kelly * uncertainty_penalty
+            # Use Bayesian uncertainty if available, otherwise use model disagreement
+            uncertainty = row.get("bayesian_uncertainty", row.get("stack_uncertainty", 0))
+
+            # More principled uncertainty penalty using posterior variance
+            if uncertainty > 0.05:
+                # Scale bet inversely with uncertainty squared (variance)
+                confidence = max(0.1, 1.0 - (uncertainty ** 2) * 10)
+                return base_kelly * confidence
 
             return base_kelly
 

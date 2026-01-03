@@ -77,6 +77,12 @@ class EdgeStrategy:
         require_rlm_alignment: bool = False,
         require_sharp_alignment: bool = False,
         min_steam_confidence: float = 0.7,
+        # CLV-based filters (opt-in, default False for backward compatibility)
+        clv_filter_enabled: bool = False,
+        min_historical_clv: float = 0.0,
+        optimal_timing_filter: bool = False,
+        clv_based_sizing: bool = False,
+        line_velocity_threshold: Optional[float] = None,
     ):
         """
         Initialize the edge strategy.
@@ -93,6 +99,11 @@ class EdgeStrategy:
             require_rlm_alignment: Only bet when RLM aligns with model (default False)
             require_sharp_alignment: Only bet when money flow indicates sharp action (default False)
             min_steam_confidence: Minimum steam confidence to require (default 0.7)
+            clv_filter_enabled: Enable CLV-based filtering (default False)
+            min_historical_clv: Only bet if similar past bets had +CLV (default 0.0)
+            optimal_timing_filter: Use optimal booking windows (default False)
+            clv_based_sizing: Scale bet size by CLV confidence (default False)
+            line_velocity_threshold: Avoid steam moves against us (default None)
         """
         self.edge_threshold = edge_threshold
         self.require_no_b2b = require_no_b2b
@@ -105,6 +116,13 @@ class EdgeStrategy:
         self.require_rlm_alignment = require_rlm_alignment
         self.require_sharp_alignment = require_sharp_alignment
         self.min_steam_confidence = min_steam_confidence
+
+        # CLV-based filters
+        self.clv_filter_enabled = clv_filter_enabled
+        self.min_historical_clv = min_historical_clv
+        self.optimal_timing_filter = optimal_timing_filter
+        self.clv_based_sizing = clv_based_sizing
+        self.line_velocity_threshold = line_velocity_threshold
 
         # Team filter: teams we should never bet on
         if teams_to_exclude is not None:
@@ -244,6 +262,47 @@ class EdgeStrategy:
                 else:
                     bet_side = "PASS"  # No clear sharp signal
 
+        # CLV-based filters
+        if bet_side != "PASS" and self.clv_filter_enabled:
+            # Determine bet_type for CLV lookup
+            bet_type = "spread"  # Default to spread for ATS betting
+
+            # Get historical CLV for similar bets
+            historical_clv, clv_std = self._get_historical_clv(
+                bet_type=bet_type,
+                bet_side=bet_side.lower(),
+                edge=abs(model_edge)
+            )
+
+            # Check if historical CLV meets minimum threshold
+            if historical_clv < self.min_historical_clv:
+                from loguru import logger
+                logger.debug(
+                    f"{game_id}: CLV filter blocked {bet_side} "
+                    f"(historical CLV {historical_clv:.3f} < {self.min_historical_clv:.3f})"
+                )
+                bet_side = "PASS"
+            else:
+                filters_passed.append(f"clv_filter_{historical_clv:.3f}")
+
+        # Optimal timing filter
+        if bet_side != "PASS" and self.optimal_timing_filter:
+            bet_type = "spread"  # Default to spread for ATS betting
+
+            if not self._check_optimal_timing(
+                game_id=game_id,
+                bet_type=bet_type,
+                bet_side=bet_side.lower()
+            ):
+                from loguru import logger
+                logger.debug(
+                    f"{game_id}: Timing filter blocked {bet_side} "
+                    f"(not optimal booking window)"
+                )
+                bet_side = "PASS"
+            else:
+                filters_passed.append("optimal_timing")
+
         # Determine confidence level based on edge size and filters
         if bet_side != "PASS":
             edge_abs = abs(model_edge)
@@ -346,6 +405,172 @@ class EdgeStrategy:
 
         return df
 
+    def _get_historical_clv(
+        self,
+        bet_type: str,
+        bet_side: str,
+        edge: float
+    ) -> tuple[float, float]:
+        """
+        Query average CLV for similar past bets.
+
+        Args:
+            bet_type: Type of bet ('moneyline', 'spread', 'totals')
+            bet_side: Side of bet ('home', 'away', 'over', 'under')
+            edge: Model edge percentage
+
+        Returns:
+            Tuple of (average CLV at 4hr, standard deviation)
+            Returns (0.0, 0.0) if no historical data available
+        """
+        import sqlite3
+        from src.bet_tracker import DB_PATH
+        from datetime import datetime, timedelta, timezone
+
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        try:
+            # Query similar bets from last 30 days
+            cutoff = (datetime.now(timezone.utc) - timedelta(days=30)).isoformat()
+
+            query = """
+                SELECT clv_at_4hr
+                FROM bets
+                WHERE bet_type = ?
+                AND bet_side = ?
+                AND edge BETWEEN ? AND ?
+                AND clv_at_4hr IS NOT NULL
+                AND settled_at >= ?
+                AND outcome IS NOT NULL
+            """
+
+            # Match similar edge (±2%)
+            edge_min = edge - 2.0
+            edge_max = edge + 2.0
+
+            results = conn.execute(
+                query,
+                (bet_type, bet_side, edge_min, edge_max, cutoff)
+            ).fetchall()
+
+            if not results:
+                return (0.0, 0.0)
+
+            clv_values = [row['clv_at_4hr'] for row in results]
+            avg_clv = np.mean(clv_values)
+            std_clv = np.std(clv_values) if len(clv_values) > 1 else 0.0
+
+            return (float(avg_clv), float(std_clv))
+
+        finally:
+            conn.close()
+
+    def _check_optimal_timing(
+        self,
+        game_id: str,
+        bet_type: str,
+        bet_side: str
+    ) -> bool:
+        """
+        Check if current time is optimal for booking.
+
+        Uses analyze_optimal_booking_time() to determine if now is good time.
+
+        Args:
+            game_id: Game identifier
+            bet_type: Type of bet
+            bet_side: Side of bet
+
+        Returns:
+            True if within recommended booking window
+        """
+        import sqlite3
+        from src.bet_tracker import DB_PATH
+        from datetime import datetime, timezone
+
+        # Get game commence time
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+
+        try:
+            # Try to get from line_snapshots first
+            result = conn.execute("""
+                SELECT DISTINCT commence_time
+                FROM opening_lines
+                WHERE game_id = ?
+                LIMIT 1
+            """, (game_id,)).fetchone()
+
+            if not result:
+                # Can't determine optimal timing without game info
+                return True  # Allow bet by default
+
+            commence_time = datetime.fromisoformat(result['commence_time'])
+            if commence_time.tzinfo is None:
+                commence_time = commence_time.replace(tzinfo=timezone.utc)
+
+            now = datetime.now(timezone.utc)
+            hours_before = (commence_time - now).total_seconds() / 3600
+
+            # Call analyze_optimal_booking_time from line_history
+            from src.data.line_history import LineHistoryManager
+
+            manager = LineHistoryManager()
+            optimal_analysis = manager.analyze_optimal_booking_time(
+                bet_type=bet_type,
+                bet_side=bet_side
+            )
+
+            if not optimal_analysis:
+                return True  # Allow bet if no data
+
+            optimal_hours = optimal_analysis.get('optimal_hours_before')
+
+            if optimal_hours is None:
+                return True
+
+            # Allow within ±2 hours of optimal time
+            return abs(hours_before - optimal_hours) <= 2.0
+
+        except Exception as e:
+            # If error checking timing, allow bet
+            return True
+
+        finally:
+            conn.close()
+
+    def calculate_kelly_with_clv_adjustment(
+        self,
+        edge: float,
+        kelly: float,
+        historical_clv: float,
+        clv_std: float
+    ) -> float:
+        """
+        Adjust Kelly sizing based on CLV confidence.
+
+        Args:
+            edge: Model edge percentage
+            kelly: Original Kelly stake
+            historical_clv: Average CLV for similar bets
+            clv_std: Standard deviation of historical CLV
+
+        Returns:
+            Adjusted Kelly stake
+        """
+        # CLV >= 2%: Full Kelly (1.0x)
+        if historical_clv >= 0.02:
+            return kelly * 1.0
+
+        # CLV 0-2%: Half Kelly (0.5x)
+        elif historical_clv >= 0.0:
+            return kelly * 0.5
+
+        # CLV < 0%: No bet (0x)
+        else:
+            return 0.0
+
     @classmethod
     def primary_strategy(cls) -> 'EdgeStrategy':
         """
@@ -413,6 +638,36 @@ class EdgeStrategy:
             require_no_b2b=True,
             require_rest_aligns=True,
             use_team_filter=True,
+        )
+
+    @classmethod
+    def clv_filtered_strategy(cls) -> 'EdgeStrategy':
+        """
+        Create CLV-filtered strategy.
+
+        Edge 5+ & No B2B & Team Filter & CLV Filter
+        Only bets with historically positive CLV (+1% minimum)
+        """
+        return cls(
+            edge_threshold=5.0,
+            require_no_b2b=True,
+            use_team_filter=True,
+            clv_filter_enabled=True,
+            min_historical_clv=0.01,  # Require +1% historical CLV
+        )
+
+    @classmethod
+    def optimal_timing_strategy(cls) -> 'EdgeStrategy':
+        """
+        Create optimal timing strategy.
+
+        Edge 5+ & No B2B & Optimal Timing Filter
+        Only bets placed at optimal time windows based on line movement analysis
+        """
+        return cls(
+            edge_threshold=5.0,
+            require_no_b2b=True,
+            optimal_timing_filter=True,
         )
 
 

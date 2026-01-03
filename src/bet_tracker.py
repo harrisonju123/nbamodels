@@ -169,6 +169,16 @@ def _get_connection() -> sqlite3.Connection:
     if "opening_line_captured_at" not in columns:
         conn.execute("ALTER TABLE bets ADD COLUMN opening_line_captured_at TEXT")
 
+    # Closing line automation columns
+    if "provisional_closing_odds" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN provisional_closing_odds REAL")
+    if "provisional_closing_line" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN provisional_closing_line REAL")
+    if "closing_line_source" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN closing_line_source TEXT")
+    if "snapshot_coverage" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN snapshot_coverage REAL")
+
     conn.commit()
     return conn
 

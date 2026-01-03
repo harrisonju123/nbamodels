@@ -1,0 +1,44 @@
+{
+  "last_retrain": "2026-01-03T02:53:06.882895",
+  "last_game_date": "2026-01-01 00:00:00",
+  "games_count": 7328,
+  "models": {
+    "dual_model": {
+      "success": true,
+      "metrics": [
+        "<src.models.dual_model.DualPredictionModel object at 0x113b9df10>",
+        {
+          "mlp_auc": 0.756691100809403,
+          "mlp_accuracy": 0.6852895950794464,
+          "mlp_brier": 0.20280438809523663,
+          "xgb_auc": 0.8492998610330232,
+          "xgb_accuracy": 0.7652485904664275,
+          "xgb_brier": 0.1623079032717073,
+          "ensemble_auc": 0.8348122884996871,
+          "ensemble_accuracy": 0.7498718605843158,
+          "ensemble_brier": 0.1645536152558614
+        }
+      ],
+      "valid": true,
+      "validation_reason": "Passed all checks"
+    },
+    "spread_model": {
+      "success": true,
+      "metrics": "<src.models.spread_model.SpreadPredictionModel object at 0x110e3dfa0>",
+      "valid": true,
+      "validation_reason": "Passed all checks"
+    },
+    "point_spread_model": {
+      "success": true,
+      "metrics": "<src.models.point_spread.PointSpreadModel object at 0x11419c7a0>",
+      "valid": true,
+      "validation_reason": "Passed all checks"
+    },
+    "totals_model": {
+      "success": true,
+      "metrics": "<src.models.totals.TotalsModel object at 0x113ce4cb0>",
+      "valid": true,
+      "validation_reason": "Passed all checks"
+    }
+  }
+}

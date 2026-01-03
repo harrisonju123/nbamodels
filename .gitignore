@@ -1,0 +1,50 @@
+# Environment
+.env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+
+# Data (large files)
+data/raw/*.json
+data/raw/*.csv
+data/raw/*.parquet
+data/processed/*.parquet
+data/features/*.parquet
+data/cache/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Models (trained models - large files)
+models/*.pkl
+models/*.joblib
+models/backups/
+*.h5
+
+# Database files
+*.db
+
+# Logs
+logs/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

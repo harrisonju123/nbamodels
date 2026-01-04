@@ -197,6 +197,7 @@ def log_bet(
     edge: float,
     kelly: float,
     bookmaker: str = None,
+    bet_amount: Optional[float] = None,  # NEW: Allow passing bet amount
 ) -> Dict:
     """
     Log a new bet recommendation.
@@ -218,16 +219,34 @@ def log_bet(
 
     logged_at = datetime.now().isoformat()
 
+    # Calculate bet amount using Kelly if not provided
+    # Default to 1% Kelly of $1000 bankroll if bet_amount not specified
+    if bet_amount is None:
+        # Convert American odds to decimal
+        if odds > 0:
+            decimal_odds = (odds / 100) + 1
+        else:
+            decimal_odds = (100 / abs(odds)) + 1
+
+        # Kelly formula: (edge * odds - (1 - edge)) / (odds - 1)
+        # Use 10% Kelly fraction for safety
+        kelly_fraction = 0.10
+        bankroll = 1000.0  # Default paper trading bankroll
+
+        b = decimal_odds - 1
+        kelly_bet = (edge * decimal_odds - (1 - model_prob)) / b if b > 0 else 0
+        bet_amount = max(10.0, min(50.0, kelly_bet * kelly_fraction * bankroll))  # Min $10, max $50
+
     conn.execute("""
         INSERT INTO bets (
             id, game_id, home_team, away_team, commence_time,
             bet_type, bet_side, odds, line, model_prob, market_prob,
-            edge, kelly, bookmaker, logged_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            edge, kelly, bookmaker, logged_at, bet_amount
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         bet_id, game_id, home_team, away_team, str(commence_time),
         bet_type, bet_side, odds, line, model_prob, market_prob,
-        edge, kelly, bookmaker, logged_at
+        edge, kelly, bookmaker, logged_at, bet_amount
     ))
 
     conn.commit()
@@ -235,7 +254,7 @@ def log_bet(
     result = conn.execute("SELECT * FROM bets WHERE id = ?", (bet_id,)).fetchone()
     conn.close()
 
-    logger.info(f"Logged bet: {away_team} @ {home_team} - {bet_type} {bet_side} at {odds:+.0f}")
+    logger.info(f"Logged bet: {away_team} @ {home_team} - {bet_type} {bet_side} at {odds:+.0f} (${bet_amount:.2f})")
     return dict(result)
 
 

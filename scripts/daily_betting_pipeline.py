@@ -35,6 +35,7 @@ from loguru import logger
 from src.data.odds_api import OddsAPIClient
 from src.data.line_history import LineHistoryManager
 from src.betting.edge_strategy import EdgeStrategy, BetSignal
+from src.betting.optimized_strategy import OptimizedBettingStrategy, OptimizedStrategyConfig
 from src.bet_tracker import log_bet
 
 
@@ -438,7 +439,9 @@ def log_bet_recommendation(
     signal: BetSignal,
     game_data: pd.Series,
     paper_mode: bool = True,
-    dry_run: bool = False
+    dry_run: bool = False,
+    bankroll: float = 1000.0,
+    strategy: OptimizedBettingStrategy = None
 ) -> Dict:
     """
     Log bet recommendation to database.
@@ -448,6 +451,8 @@ def log_bet_recommendation(
         game_data: Game row from DataFrame
         paper_mode: If True, mark as paper trade
         dry_run: If True, don't actually log
+        bankroll: Current bankroll for bet sizing
+        strategy: OptimizedBettingStrategy instance for sizing
 
     Returns:
         Logged bet record
@@ -457,13 +462,40 @@ def log_bet_recommendation(
         odds = game_data.get('home_odds', -110)
         line = signal.market_spread
         team = signal.home_team
+        side = 'home'
     else:
         odds = game_data.get('away_odds', -110)
         line = -signal.market_spread
         team = signal.away_team
+        side = 'away'
+
+    # Calculate probabilities
+    model_prob = 0.50 + (signal.model_edge * 0.01)  # Rough approximation
+    market_prob = 0.50
+    edge = model_prob - market_prob
+
+    # Calculate bet size using OptimizedBettingStrategy if provided
+    if strategy:
+        # Convert American odds to decimal
+        if odds > 0:
+            decimal_odds = (odds / 100) + 1
+        else:
+            decimal_odds = (100 / abs(odds)) + 1
+
+        bet_amount = strategy.calculate_bet_size(
+            edge=edge,
+            odds=decimal_odds,
+            bankroll=bankroll,
+            confidence=model_prob,
+            side=side
+        )
+    else:
+        # Fallback to simple Kelly calculation in log_bet
+        bet_amount = None
 
     if dry_run:
-        logger.info(f"[DRY RUN] Would log bet: {signal.bet_side} {team}")
+        bet_size_str = f"${bet_amount:.2f}" if bet_amount else "calculated"
+        logger.info(f"[DRY RUN] Would log bet: {signal.bet_side} {team} ({bet_size_str})")
         return {}
 
     # Log to database
@@ -476,11 +508,12 @@ def log_bet_recommendation(
         bet_side=signal.bet_side.lower(),
         odds=odds,
         line=line,
-        model_prob=0.50 + (signal.model_edge * 0.01),
-        market_prob=0.50,
-        edge=signal.model_edge,
-        kelly=signal.model_edge * 0.01,
+        model_prob=model_prob,
+        market_prob=market_prob,
+        edge=edge,
+        kelly=edge,
         bookmaker='PAPER_TRADE' if paper_mode else 'draftkings',
+        bet_amount=bet_amount,
     )
 
     return bet_record
@@ -620,16 +653,28 @@ def main():
     # Step 7: Print recommendations
     print_recommendations(signals, games_df)
 
-    # Step 8: Log bets
+    # Step 8: Log bets with optimized sizing
     if actionable and not args.dry_run:
         logger.info("\n7️⃣  Logging bets to database...")
 
+        # Initialize optimized strategy for bet sizing
+        sizing_strategy = OptimizedBettingStrategy(OptimizedStrategyConfig())
+        bankroll = 1000.0  # Paper trading starting bankroll
+
         for signal in actionable:
             game = games_df[games_df['game_id'] == signal.game_id].iloc[0]
-            log_bet_recommendation(signal, game, paper_mode=PAPER_TRADING, dry_run=args.dry_run)
+            log_bet_recommendation(
+                signal,
+                game,
+                paper_mode=PAPER_TRADING,
+                dry_run=args.dry_run,
+                bankroll=bankroll,
+                strategy=sizing_strategy
+            )
 
         logger.info(f"   ✓ Logged {len(actionable)} bets")
         logger.info(f"   💾 Mode: {'Paper trade' if PAPER_TRADING else 'Live bet'}")
+        logger.info(f"   💰 Bankroll sizing: 10% Kelly with optimized thresholds")
 
     # Summary
     logger.info("\n" + "=" * 80)

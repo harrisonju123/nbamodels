@@ -741,10 +741,13 @@ with tab5:
             st.divider()
 
             # Display predictions by market
-            # Spread predictions (ATS model - highest ROI)
-            if 'ats' in predictions and predictions['ats'] is not None and not predictions['ats'].empty:
-                st.markdown("#### 📈 Spread Picks (ATS Model)")
-                ats_df = predictions['ats']
+            # Spread predictions from Pipeline (with CLV filter + edge strategy)
+            # Check for 'pipeline' first (new), fall back to 'ats' (old cache) for compatibility
+            picks_key = 'pipeline' if 'pipeline' in predictions else 'ats'
+
+            if picks_key in predictions and predictions[picks_key] is not None and not predictions[picks_key].empty:
+                st.markdown("#### 📈 Spread Picks (Daily Pipeline - CLV Filtered)")
+                ats_df = predictions[picks_key]
 
                 # Show only games with actual bets (not PASS)
                 # Use bet_side column if available, otherwise fall back to bet_home/bet_away flags
@@ -863,8 +866,10 @@ with tab5:
 
             # Show message if no predictions with bets
             has_ats_bets = False
-            if 'ats' in predictions and predictions['ats'] is not None and not predictions['ats'].empty:
-                ats_df = predictions['ats']
+            # Check pipeline first, fall back to ats for old cache
+            picks_check_key = 'pipeline' if 'pipeline' in predictions else 'ats'
+            if picks_check_key in predictions and predictions[picks_check_key] is not None and not predictions[picks_check_key].empty:
+                ats_df = predictions[picks_check_key]
                 if 'bet_side' in ats_df.columns:
                     has_ats_bets = any(ats_df['bet_side'].isin(['HOME', 'AWAY']))
                 else:

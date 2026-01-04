@@ -36,6 +36,7 @@ from src.data.odds_api import OddsAPIClient
 from src.data.line_history import LineHistoryManager
 from src.betting.edge_strategy import EdgeStrategy, BetSignal
 from src.betting.optimized_strategy import OptimizedBettingStrategy, OptimizedStrategyConfig
+from src.betting.line_shopping import LineShoppingEngine
 from src.bet_tracker import log_bet
 
 
@@ -336,6 +337,34 @@ def fetch_current_odds(game_ids: List[str] = None) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_all_odds_for_line_shopping(game_ids: List[str] = None) -> pd.DataFrame:
+    """
+    Fetch ALL odds from ALL bookmakers for line shopping.
+
+    Args:
+        game_ids: Optional list of game IDs to filter
+
+    Returns:
+        DataFrame with all bookmaker odds (long format)
+    """
+    odds_client = OddsAPIClient()
+
+    try:
+        odds_df = odds_client.get_current_odds(markets=['spreads'])
+
+        if odds_df.empty:
+            return pd.DataFrame()
+
+        if game_ids:
+            odds_df = odds_df[odds_df['game_id'].isin(game_ids)]
+
+        return odds_df
+
+    except Exception as e:
+        logger.error(f"Error fetching odds for line shopping: {e}")
+        return pd.DataFrame()
+
+
 def analyze_line_movements(games_df: pd.DataFrame) -> pd.DataFrame:
     """
     Analyze line movement patterns for each game.
@@ -438,17 +467,19 @@ def evaluate_games(
 def log_bet_recommendation(
     signal: BetSignal,
     game_data: pd.Series,
+    all_odds_df: pd.DataFrame = None,
     paper_mode: bool = True,
     dry_run: bool = False,
     bankroll: float = 1000.0,
     strategy: OptimizedBettingStrategy = None
 ) -> Dict:
     """
-    Log bet recommendation to database.
+    Log bet recommendation to database with line shopping.
 
     Args:
         signal: BetSignal object
         game_data: Game row from DataFrame
+        all_odds_df: All bookmaker odds for line shopping (optional)
         paper_mode: If True, mark as paper trade
         dry_run: If True, don't actually log
         bankroll: Current bankroll for bet sizing
@@ -457,17 +488,41 @@ def log_bet_recommendation(
     Returns:
         Logged bet record
     """
-    # Get odds for the bet side
+    # Determine side
     if signal.bet_side == "HOME":
-        odds = game_data.get('home_odds', -110)
-        line = signal.market_spread
-        team = signal.home_team
         side = 'home'
+        team = signal.home_team
+        line = signal.market_spread
     else:
-        odds = game_data.get('away_odds', -110)
-        line = -signal.market_spread
-        team = signal.away_team
         side = 'away'
+        team = signal.away_team
+        line = -signal.market_spread
+
+    # Use line shopping if available
+    if all_odds_df is not None and not all_odds_df.empty:
+        shopping_engine = LineShoppingEngine()
+        best_odds_info = shopping_engine.find_best_spread_odds(
+            all_odds_df,
+            signal.game_id,
+            side,
+            target_line=abs(line)
+        )
+
+        if best_odds_info:
+            odds = best_odds_info['odds']
+            bookmaker = best_odds_info['bookmaker']
+            num_books = best_odds_info['total_books']
+            edge_vs_worst = best_odds_info['edge_vs_worst']
+
+            logger.info(f"🛒 Line shopping: {bookmaker} @ {odds:+.0f} (best of {num_books} books, +{edge_vs_worst:.2%} vs worst)")
+        else:
+            # Fallback to game_data odds
+            odds = game_data.get('home_odds' if side == 'home' else 'away_odds', -110)
+            bookmaker = game_data.get('bookmaker', 'unknown')
+    else:
+        # No line shopping data, use game_data
+        odds = game_data.get('home_odds' if side == 'home' else 'away_odds', -110)
+        bookmaker = game_data.get('bookmaker', 'unknown')
 
     # Calculate probabilities
     model_prob = 0.50 + (signal.model_edge * 0.01)  # Rough approximation
@@ -512,7 +567,7 @@ def log_bet_recommendation(
         market_prob=market_prob,
         edge=edge,
         kelly=edge,
-        bookmaker='PAPER_TRADE' if paper_mode else 'draftkings',
+        bookmaker=f"PAPER/{bookmaker}" if paper_mode else bookmaker,
         bet_amount=bet_amount,
     )
 
@@ -653,9 +708,23 @@ def main():
     # Step 7: Print recommendations
     print_recommendations(signals, games_df)
 
-    # Step 8: Log bets with optimized sizing
+    # Step 8: Fetch all odds for line shopping
+    if actionable:
+        logger.info("\n7️⃣  Fetching odds from all bookmakers for line shopping...")
+        all_odds_df = fetch_all_odds_for_line_shopping(games_df['game_id'].tolist())
+
+        if not all_odds_df.empty:
+            unique_books = all_odds_df['bookmaker'].nunique()
+            logger.info(f"   ✓ Found odds from {unique_books} bookmakers")
+            logger.info(f"   🛒 Line shopping enabled")
+        else:
+            logger.warning(f"   ⚠️  No multi-book odds available, using single book")
+    else:
+        all_odds_df = pd.DataFrame()
+
+    # Step 9: Log bets with optimized sizing and line shopping
     if actionable and not args.dry_run:
-        logger.info("\n7️⃣  Logging bets to database...")
+        logger.info("\n8️⃣  Logging bets to database...")
 
         # Initialize optimized strategy for bet sizing
         sizing_strategy = OptimizedBettingStrategy(OptimizedStrategyConfig())
@@ -666,6 +735,7 @@ def main():
             log_bet_recommendation(
                 signal,
                 game,
+                all_odds_df=all_odds_df,
                 paper_mode=PAPER_TRADING,
                 dry_run=args.dry_run,
                 bankroll=bankroll,
@@ -675,6 +745,8 @@ def main():
         logger.info(f"   ✓ Logged {len(actionable)} bets")
         logger.info(f"   💾 Mode: {'Paper trade' if PAPER_TRADING else 'Live bet'}")
         logger.info(f"   💰 Bankroll sizing: 10% Kelly with optimized thresholds")
+        if not all_odds_df.empty:
+            logger.info(f"   🛒 Line shopping: Best odds from {unique_books} bookmakers")
 
     # Summary
     logger.info("\n" + "=" * 80)

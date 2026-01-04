@@ -5,7 +5,7 @@ A data-driven NBA betting system using machine learning models, alternative data
 ## 🎯 Current Performance
 
 **Paper Trading Results** (as of January 2026):
-- **6.91% ROI** overall
+- **6.91% ROI** overall (expected 7.5-8.9% with line shopping)
 - **56.0% win rate** (84W-66L)
 - **150 bets** tracked
 - **+$1,036 profit** on $15,000 wagered
@@ -13,6 +13,8 @@ A data-driven NBA betting system using machine learning models, alternative data
 **Performance by Side:**
 - Away Bets: **11.36% ROI** (58.3% win rate) ⭐
 - Home Bets: **4.81% ROI** (54.9% win rate)
+
+**Line Shopping**: Automatic best odds selection across 6 bookmakers (+0.5-2% ROI improvement)
 
 ## 🚀 Quick Start
 
@@ -34,13 +36,16 @@ cp .env.example .env
 ### Daily Workflow
 
 ```bash
-# 1. Get today's bet recommendations
+# 1. Get today's bet recommendations (with automatic line shopping)
 python scripts/daily_betting_pipeline.py
 
 # 2. View performance dashboard
 python scripts/paper_trading_dashboard.py
 
-# 3. Monitor closing line value (optional)
+# 3. Line shopping value report (optional)
+python scripts/line_shopping_report.py
+
+# 4. Monitor closing line value (optional)
 python scripts/generate_clv_report.py
 ```
 
@@ -68,6 +73,7 @@ python scripts/generate_clv_report.py
 - **Home bias penalty**: -2% edge adjustment
 - **CLV filtering**: Historical closing line value threshold
 - **Drawdown protection**: 30% stop loss
+- **Line shopping**: Automatic best odds across 6+ bookmakers
 
 ## 📁 Project Structure
 
@@ -92,7 +98,8 @@ nbamodels/
 └── docs/                       # Documentation
     ├── PAPER_TRADING_FIXES.md
     ├── ALTERNATIVE_DATA_INTEGRATION.md
-    └── BACKTEST_ANALYSIS.md
+    ├── BACKTEST_ANALYSIS.md
+    └── LINE_SHOPPING.md
 ```
 
 ## 🔧 Configuration

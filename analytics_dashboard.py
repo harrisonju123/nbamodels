@@ -409,11 +409,11 @@ def create_performance_by_edge_chart(df):
     if len(df_settled) < 10:
         return None
 
-    # Create edge bins
+    # Create edge bins (6 edges = 5 bins, so need exactly 5 labels)
     df_settled['edge_bin'] = pd.cut(
         df_settled['edge'] * 100,
         bins=[0, 5, 7, 10, 15, 100],
-        labels=['5-7%', '7-10%', '10-15%', '15%+', '20%+'][:4]
+        labels=['0-5%', '5-7%', '7-10%', '10-15%', '15%+']
     )
 
     # Calculate win rate by edge bin

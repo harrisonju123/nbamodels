@@ -255,7 +255,8 @@ def get_summary(
 
         # Filter by date if specified
         if days:
-            cutoff = datetime.now() - timedelta(days=days)
+            from datetime import timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
             df = df[df['logged_at'] >= cutoff]
 
@@ -302,7 +303,8 @@ def get_performance(
         df = get_bet_history()
 
         if days and not df.empty:
-            cutoff = datetime.now() - timedelta(days=days)
+            from datetime import timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
             df = df[df['logged_at'] >= cutoff]
 
@@ -392,7 +394,8 @@ def get_clv(
             )
 
         if days:
-            cutoff = datetime.now() - timedelta(days=days)
+            from datetime import timezone
+            cutoff = datetime.now(timezone.utc) - timedelta(days=days)
             df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
             df = df[df['logged_at'] >= cutoff]
 

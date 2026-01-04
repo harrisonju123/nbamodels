@@ -161,11 +161,13 @@ def load_bets_data(start_date=None, end_date=None):
     # Convert date strings to datetime (handle ISO8601 format with timezone)
     df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
 
-    # Filter by date range
+    # Filter by date range (ensure timezone-aware for comparison)
     if start_date:
-        df = df[df['logged_at'] >= pd.to_datetime(start_date)]
+        start_dt = pd.to_datetime(start_date, utc=True)
+        df = df[df['logged_at'] >= start_dt]
     if end_date:
-        df = df[df['logged_at'] <= pd.to_datetime(end_date)]
+        end_dt = pd.to_datetime(end_date, utc=True)
+        df = df[df['logged_at'] <= end_dt]
 
     return df
 

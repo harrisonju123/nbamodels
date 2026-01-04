@@ -524,11 +524,12 @@ st.markdown("### 📈 Performance Overview")
 create_performance_summary_cards(df_bets)
 
 # Create tabs for different analytics sections
-tab1, tab2, tab3, tab4 = st.tabs([
+tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "📊 Performance Analytics",
     "💰 CLV Analysis",
     "🎯 Model Performance",
-    "📅 Time-based Analytics"
+    "📅 Time-based Analytics",
+    "🎲 Today's Picks"
 ])
 
 with tab1:
@@ -686,6 +687,170 @@ with tab4:
             use_container_width=True,
             height=400
         )
+
+with tab5:
+    st.markdown("### Today's Betting Picks")
+
+    try:
+        # Import prediction functions
+        from src.prediction_cache import load_cached_predictions, get_cache_info, refresh_predictions
+        from src.bet_tracker import log_manual_bet, get_regime_status
+
+        # Load predictions from cache
+        predictions = load_cached_predictions()
+        cache_info = get_cache_info()
+
+        # Header with cache info and refresh
+        col1, col2 = st.columns([4, 1])
+        with col1:
+            if cache_info:
+                st.caption(f"📅 Updated: {cache_info.get('timestamp', 'Unknown')[:16]} | {cache_info.get('num_games', 0)} games")
+            else:
+                st.caption("No cached predictions available")
+
+        with col2:
+            if st.button("🔄 Refresh", key="refresh_predictions", use_container_width=True):
+                with st.spinner("Refreshing predictions..."):
+                    predictions = refresh_predictions(min_edge=0.02)
+                    st.success("Predictions refreshed!")
+                    st.rerun()
+
+        if not predictions or not any(predictions.values()):
+            st.info("No predictions available. Click Refresh to load today's picks.")
+        else:
+            # Get regime status
+            regime_status = get_regime_status()
+            regime = regime_status.get('regime', 'normal') if regime_status else 'normal'
+
+            # Display regime status
+            if regime == 'edge_decay':
+                st.warning(f"⚠️ EDGE DECAY: {regime_status.get('pause_reason', 'Performance below threshold')} - Bet sizes reduced 50%")
+            elif regime == 'volatile':
+                st.warning("⚠️ Volatile market conditions - Bet sizes reduced 50%")
+            elif regime == 'hot_streak':
+                st.info("ℹ️ Hot streak detected - Proceed with caution")
+            else:
+                st.success(f"✅ Regime: {regime.upper().replace('_', ' ')}")
+
+            st.divider()
+
+            # Display predictions by market
+            # Spread predictions (ATS model - highest ROI)
+            if 'ats' in predictions and predictions['ats'] is not None and not predictions['ats'].empty:
+                st.markdown("#### 📈 Spread Picks (ATS Model)")
+                ats_df = predictions['ats']
+
+                # Show only games with bets
+                ats_bets = ats_df[
+                    (ats_df.get('bet_home', False) == True) |
+                    (ats_df.get('bet_away', False) == True)
+                ]
+
+                if not ats_bets.empty:
+                    for _, row in ats_bets.iterrows():
+                        bet_team = row['home_team'] if row.get('bet_home') else row['away_team']
+                        bet_side = 'home' if row.get('bet_home') else 'away'
+                        line = row.get('spread_home', 0) if row.get('bet_home') else -row.get('spread_home', 0)
+                        edge = row.get('home_edge', 0) if row.get('bet_home') else row.get('away_edge', 0)
+                        kelly = row.get('home_kelly', 0) if row.get('bet_home') else row.get('away_kelly', 0)
+
+                        with st.expander(f"**{row['away_team']} @ {row['home_team']}**", expanded=True):
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Pick", f"{bet_team} {line:+.1f}")
+                            with col2:
+                                st.metric("Edge", f"{edge:.1f}%")
+                            with col3:
+                                bet_amt = 1000 * kelly * 0.25  # 1/4 Kelly on $1000 bankroll
+                                st.metric("Suggested Bet", f"${bet_amt:.0f}")
+
+                            # Quick log button
+                            if st.button(f"📝 Log This Bet", key=f"log_spread_{row['game_id']}", use_container_width=True):
+                                try:
+                                    log_manual_bet(
+                                        game_id=row['game_id'],
+                                        home_team=row['home_team'],
+                                        away_team=row['away_team'],
+                                        commence_time=row['commence_time'],
+                                        bet_type='spread',
+                                        bet_side=bet_side,
+                                        odds=-110,
+                                        bet_amount=bet_amt,
+                                        line=line
+                                    )
+                                    st.success("✅ Bet logged!")
+                                except Exception as e:
+                                    st.error(f"Error logging bet: {e}")
+                else:
+                    st.info("No spread picks with edge today")
+
+            # Moneyline predictions (Stacking model)
+            if 'stacking' in predictions and predictions['stacking'] is not None and not predictions['stacking'].empty:
+                st.markdown("#### 💰 Moneyline Picks (Stacking Ensemble)")
+                stack_df = predictions['stacking']
+
+                # Show only games with bets
+                ml_bets = stack_df[
+                    (stack_df.get('bet_home', False) == True) |
+                    (stack_df.get('bet_away', False) == True)
+                ]
+
+                if not ml_bets.empty:
+                    for _, row in ml_bets.iterrows():
+                        bet_team = row['home_team'] if row.get('bet_home') else row['away_team']
+                        bet_side = 'home' if row.get('bet_home') else 'away'
+                        odds = row.get('best_home_odds', -110) if row.get('bet_home') else row.get('best_away_odds', -110)
+                        prob = row.get('stack_home_prob_adj', 0.5) if row.get('bet_home') else row.get('stack_away_prob_adj', 0.5)
+                        kelly = row.get('home_kelly', 0) if row.get('bet_home') else row.get('away_kelly', 0)
+                        confidence = row.get('confidence', 'Medium')
+
+                        with st.expander(f"**{row['away_team']} @ {row['home_team']}**", expanded=True):
+                            col1, col2, col3 = st.columns(3)
+                            with col1:
+                                st.metric("Pick", f"{bet_team} ({odds:+d})")
+                            with col2:
+                                st.metric("Win Probability", f"{prob:.1%}")
+                            with col3:
+                                bet_amt = 1000 * kelly * 0.25
+                                st.metric("Suggested Bet", f"${bet_amt:.0f}")
+
+                            st.caption(f"Confidence: {confidence}")
+
+                            # Quick log button
+                            if st.button(f"📝 Log This Bet", key=f"log_ml_{row['game_id']}", use_container_width=True):
+                                try:
+                                    log_manual_bet(
+                                        game_id=row['game_id'],
+                                        home_team=row['home_team'],
+                                        away_team=row['away_team'],
+                                        commence_time=row['commence_time'],
+                                        bet_type='moneyline',
+                                        bet_side=bet_side,
+                                        odds=odds,
+                                        bet_amount=bet_amt,
+                                        model_prob=prob
+                                    )
+                                    st.success("✅ Bet logged!")
+                                except Exception as e:
+                                    st.error(f"Error logging bet: {e}")
+                else:
+                    st.info("No moneyline picks with edge today")
+
+            # Show message if no predictions
+            if not any([
+                ('ats' in predictions and predictions['ats'] is not None and not predictions['ats'].empty),
+                ('stacking' in predictions and predictions['stacking'] is not None and not predictions['stacking'].empty)
+            ]):
+                st.info("No predictions available. Click Refresh to load today's games.")
+
+    except ImportError as e:
+        st.error(f"Prediction modules not found: {e}")
+        st.info("Make sure src/prediction_cache.py exists and is properly configured.")
+    except Exception as e:
+        st.error(f"Error loading predictions: {e}")
+        import traceback
+        with st.expander("Show error details"):
+            st.code(traceback.format_exc())
 
 # Footer
 st.markdown("---")

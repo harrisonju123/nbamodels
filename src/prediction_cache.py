@@ -154,15 +154,8 @@ def _refresh_with_pipeline_logic() -> Dict[str, pd.DataFrame]:
         odds_client = OddsAPIClient()
         all_odds = odds_client.get_current_odds(markets=["h2h", "spreads", "totals"])
 
-        # Initialize strategy (same as pipeline - "clv_filtered" strategy)
-        strategy = EdgeStrategy(
-            edge_threshold=5.0,
-            require_no_b2b=True,
-            require_rest_aligns=True,
-            use_team_filter=True,
-            clv_filter_enabled=True,
-            min_historical_clv=0.01
-        )
+        # Initialize strategy (same as pipeline - use the class method)
+        strategy = EdgeStrategy.clv_filtered_strategy()
 
         # Evaluate games with strategy
         signals = evaluate_games(games_df, strategy)

@@ -36,20 +36,59 @@ class OddsAPIClient:
             logger.warning("No ODDS_API_KEY found. Set it in .env")
         self.session = requests.Session()
 
-    def _make_request(self, endpoint: str, params: dict = None) -> dict:
-        """Make a request to the API."""
+    def _make_request(self, endpoint: str, params: dict = None, timeout: int = 10, max_retries: int = 3) -> dict:
+        """
+        Make a request to the API with retry logic.
+
+        Args:
+            endpoint: API endpoint
+            params: Query parameters
+            timeout: Request timeout in seconds
+            max_retries: Maximum number of retry attempts
+
+        Returns:
+            JSON response dict
+
+        Raises:
+            requests.exceptions.RequestException: On failure after retries
+        """
         url = f"{self.BASE_URL}/{endpoint}"
         params = params or {}
         params["apiKey"] = self.api_key
 
-        response = self.session.get(url, params=params)
+        for attempt in range(max_retries):
+            try:
+                response = self.session.get(url, params=params, timeout=timeout)
 
-        # Log remaining requests
-        remaining = response.headers.get("x-requests-remaining", "?")
-        logger.debug(f"API requests remaining: {remaining}")
+                # Log remaining requests
+                remaining = response.headers.get("x-requests-remaining", "?")
+                logger.debug(f"API requests remaining: {remaining}")
 
-        response.raise_for_status()
-        return response.json()
+                response.raise_for_status()
+                return response.json()
+
+            except requests.exceptions.Timeout:
+                logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries})")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)  # Exponential backoff
+
+            except requests.exceptions.HTTPError as e:
+                # Don't retry on client errors (4xx)
+                if 400 <= e.response.status_code < 500:
+                    logger.error(f"HTTP {e.response.status_code}: {e.response.text}")
+                    raise
+                # Retry on server errors (5xx)
+                logger.warning(f"HTTP {e.response.status_code} (attempt {attempt + 1}/{max_retries})")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"Request error: {e} (attempt {attempt + 1}/{max_retries})")
+                if attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
 
     def get_current_odds(
         self,
@@ -64,7 +103,7 @@ class OddsAPIClient:
             bookmakers: List of bookmakers to include
 
         Returns:
-            DataFrame with current odds
+            DataFrame with current odds (empty DataFrame on error)
         """
         markets = markets or ["h2h", "spreads", "totals"]
         bookmakers = bookmakers or self.BOOKMAKERS
@@ -76,8 +115,12 @@ class OddsAPIClient:
             "oddsFormat": "american",
         }
 
-        data = self._make_request(f"sports/{self.SPORT}/odds", params)
-        return self._parse_odds(data)
+        try:
+            data = self._make_request(f"sports/{self.SPORT}/odds", params)
+            return self._parse_odds(data)
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch current odds: {e}")
+            return pd.DataFrame()
 
     def _parse_odds(self, games: list) -> pd.DataFrame:
         """Parse raw odds data into a structured DataFrame."""

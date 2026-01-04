@@ -12,47 +12,32 @@ import pandas as pd
 import requests
 from loguru import logger
 
+from src.utils.constants import (
+    TEAM_NAME_TO_ABBREV,
+    API_TIMEOUT_SECONDS,
+    API_RATE_LIMIT_DELAY,
+    STATUS_MISS_PROB,
+    STARTER_MINUTES_THRESHOLD,
+    SCORING_REPLACEMENT_RATE,
+    ASSIST_REPLACEMENT_RATE,
+    ASSIST_POINT_VALUE,
+    REBOUND_REPLACEMENT_RATE,
+    REBOUND_POINT_VALUE,
+    PLUS_MINUS_WEIGHT,
+    MVP_LEVEL_PPG,
+    ALLSTAR_LEVEL_PPG,
+    QUALITY_STARTER_PPG,
+    MVP_MULTIPLIER,
+    ALLSTAR_MULTIPLIER,
+    QUALITY_STARTER_MULTIPLIER,
+    MIN_ROTATION_PLAYER_IMPACT,
+)
+
 
 class ESPNClient:
     """Client for fetching NBA injury data from ESPN's API."""
 
     BASE_URL = "https://site.api.espn.com/apis/site/v2/sports/basketball/nba"
-
-    # Team name to abbreviation mapping
-    TEAM_NAME_TO_ABBREV = {
-        "Atlanta Hawks": "ATL",
-        "Boston Celtics": "BOS",
-        "Brooklyn Nets": "BKN",
-        "Charlotte Hornets": "CHA",
-        "Chicago Bulls": "CHI",
-        "Cleveland Cavaliers": "CLE",
-        "Dallas Mavericks": "DAL",
-        "Denver Nuggets": "DEN",
-        "Detroit Pistons": "DET",
-        "Golden State Warriors": "GSW",
-        "Houston Rockets": "HOU",
-        "Indiana Pacers": "IND",
-        "LA Clippers": "LAC",
-        "Los Angeles Clippers": "LAC",
-        "Los Angeles Lakers": "LAL",
-        "LA Lakers": "LAL",
-        "Memphis Grizzlies": "MEM",
-        "Miami Heat": "MIA",
-        "Milwaukee Bucks": "MIL",
-        "Minnesota Timberwolves": "MIN",
-        "New Orleans Pelicans": "NOP",
-        "New York Knicks": "NYK",
-        "Oklahoma City Thunder": "OKC",
-        "Orlando Magic": "ORL",
-        "Philadelphia 76ers": "PHI",
-        "Phoenix Suns": "PHX",
-        "Portland Trail Blazers": "POR",
-        "Sacramento Kings": "SAC",
-        "San Antonio Spurs": "SAS",
-        "Toronto Raptors": "TOR",
-        "Utah Jazz": "UTA",
-        "Washington Wizards": "WAS",
-    }
 
     def __init__(self):
         self.session = requests.Session()
@@ -63,9 +48,9 @@ class ESPNClient:
     def _make_request(self, url: str, params: dict = None) -> dict:
         """Make a request with error handling."""
         try:
-            response = self.session.get(url, params=params, timeout=10)
+            response = self.session.get(url, params=params, timeout=API_TIMEOUT_SECONDS)
             response.raise_for_status()
-            time.sleep(0.5)
+            time.sleep(API_RATE_LIMIT_DELAY)
             return response.json()
         except requests.exceptions.RequestException as e:
             logger.error(f"ESPN API request failed: {e}")
@@ -85,7 +70,7 @@ class ESPNClient:
         for team_data in data.get("injuries", []):
             # Get team abbreviation from displayName
             team_full_name = team_data.get("displayName", "")
-            team_abbrev = self.TEAM_NAME_TO_ABBREV.get(team_full_name, "UNK")
+            team_abbrev = TEAM_NAME_TO_ABBREV.get(team_full_name, "UNK")
 
             for injury in team_data.get("injuries", []):
                 athlete = injury.get("athlete", {})
@@ -305,17 +290,6 @@ class PlayerImpactCalculator:
     - Plus/minus (net impact on court)
     """
 
-    # Status to probability of missing the game
-    STATUS_MISS_PROB = {
-        "Out": 1.0,
-        "Doubtful": 0.9,
-        "Questionable": 0.6,
-        "Day-To-Day": 0.5,
-        "Probable": 0.15,
-        "Available": 0.0,
-        "Unknown": 0.5,
-    }
-
     def __init__(self):
         self.stats_cache = PlayerStatsCache()
 
@@ -341,33 +315,33 @@ class PlayerImpactCalculator:
         mpg = player_stats.get('mpg', 0) or 0
         plus_minus = player_stats.get('plus_minus', 0) or 0
 
-        # Minutes factor: scale impact by playing time (30-35 min = max impact)
-        minutes_factor = min(mpg / 32, 1.0) if mpg > 0 else 0.3
+        # Minutes factor: scale impact by playing time
+        minutes_factor = min(mpg / STARTER_MINUTES_THRESHOLD, 1.0) if mpg > 0 else 0.3
 
-        # Scoring impact: ~25-30% of scoring not replaced
-        scoring_impact = ppg * 0.28
+        # Scoring impact
+        scoring_impact = ppg * SCORING_REPLACEMENT_RATE
 
-        # Assist impact: each assist ~1.5 points, ~35% not replaced
-        assist_impact = apg * 1.5 * 0.35
+        # Assist impact
+        assist_impact = apg * ASSIST_POINT_VALUE * ASSIST_REPLACEMENT_RATE
 
-        # Rebound impact: each rebound ~0.4 points in possession value
-        rebound_impact = rpg * 0.4 * 0.25
+        # Rebound impact
+        rebound_impact = rpg * REBOUND_POINT_VALUE * REBOUND_REPLACEMENT_RATE
 
         # Plus/minus bonus: adds context for defensive impact
-        pm_impact = max(0, plus_minus * 0.1)
+        pm_impact = max(0, plus_minus * PLUS_MINUS_WEIGHT)
 
         base_impact = (scoring_impact + assist_impact + rebound_impact + pm_impact) * minutes_factor
 
         # Star player multiplier (stars are harder to replace)
-        if ppg >= 25:
-            base_impact *= 1.4  # MVP-level
-        elif ppg >= 20:
-            base_impact *= 1.25  # All-Star level
-        elif ppg >= 15:
-            base_impact *= 1.1  # Quality starter
+        if ppg >= MVP_LEVEL_PPG:
+            base_impact *= MVP_MULTIPLIER
+        elif ppg >= ALLSTAR_LEVEL_PPG:
+            base_impact *= ALLSTAR_MULTIPLIER
+        elif ppg >= QUALITY_STARTER_PPG:
+            base_impact *= QUALITY_STARTER_MULTIPLIER
 
-        # Floor of 1.0 for any rotation player
-        return max(round(base_impact, 2), 1.0)
+        # Floor for any rotation player
+        return max(round(base_impact, 2), MIN_ROTATION_PLAYER_IMPACT)
 
     def get_team_injury_impact(
         self,
@@ -394,6 +368,9 @@ class PlayerImpactCalculator:
                 "key_players_out": [],
             }
 
+        # Get all player stats in one batch to avoid N+1 queries
+        stats_df = self.stats_cache.refresh()
+
         total_impact = 0.0
         expected_impact = 0.0
         injured_players = []
@@ -406,8 +383,8 @@ class PlayerImpactCalculator:
             status = injury["status"]
             espn_team = injury["team"]
 
-            # Get player stats - this returns actual team from NBA API
-            player_stats = self.stats_cache.get_player_stats(player_name, team=espn_team)
+            # Look up player stats from pre-loaded DataFrame
+            player_stats = self._lookup_player_stats(player_name, espn_team, stats_df)
 
             # Skip if player not found
             if player_stats is None:
@@ -423,7 +400,7 @@ class PlayerImpactCalculator:
             impact = self.calculate_player_impact(player_stats)
 
             # Get probability of missing game
-            miss_prob = self.STATUS_MISS_PROB.get(status, 0.5)
+            miss_prob = STATUS_MISS_PROB.get(status, 0.5)
 
             # Expected impact = impact * probability of missing
             exp_impact = impact * miss_prob
@@ -461,6 +438,66 @@ class PlayerImpactCalculator:
             "star_out": star_out,
             "key_players_out": key_players_out,
         }
+
+    def _lookup_player_stats(self, player_name: str, team: str, stats_df: pd.DataFrame) -> Optional[dict]:
+        """
+        Look up player stats from pre-loaded DataFrame (avoids N+1 queries).
+
+        Args:
+            player_name: Player name
+            team: Expected team abbreviation
+            stats_df: Pre-loaded stats DataFrame
+
+        Returns:
+            Player stats dict or None if not found
+        """
+        if stats_df is None or stats_df.empty:
+            # Fall back to star player dictionary
+            name_lower = player_name.lower().strip()
+            if hasattr(PlayerStatsCache, 'STAR_PLAYER_FALLBACK'):
+                if name_lower in PlayerStatsCache.STAR_PLAYER_FALLBACK:
+                    return PlayerStatsCache.STAR_PLAYER_FALLBACK[name_lower]
+                # Try partial match
+                for fallback_name, stats in PlayerStatsCache.STAR_PLAYER_FALLBACK.items():
+                    if name_lower.split()[-1] in fallback_name or fallback_name.split()[-1] in name_lower:
+                        return stats
+            return None
+
+        name_lower = player_name.lower().strip()
+
+        # Try exact match first
+        match = stats_df[stats_df['player_name'].str.lower() == name_lower]
+
+        # Try partial match if no exact match
+        if match.empty:
+            last_name = name_lower.split()[-1] if name_lower else ""
+            if last_name:
+                match = stats_df[stats_df['player_name'].str.lower().str.contains(last_name, na=False)]
+
+        if not match.empty:
+            result = match.iloc[0].to_dict()
+
+            # If team mismatch, trust NBA API and correct the team
+            if team and result.get('team') != team:
+                logger.debug(
+                    f"Team correction for {player_name}: ESPN says {team}, "
+                    f"NBA API says {result.get('team')} - using NBA API team"
+                )
+                result['espn_team'] = team
+                result['team_corrected'] = True
+
+            return result
+
+        # Fall back to star player dictionary
+        if hasattr(PlayerStatsCache, 'STAR_PLAYER_FALLBACK'):
+            if name_lower in PlayerStatsCache.STAR_PLAYER_FALLBACK:
+                return PlayerStatsCache.STAR_PLAYER_FALLBACK[name_lower]
+            # Try partial match
+            for fallback_name, stats in PlayerStatsCache.STAR_PLAYER_FALLBACK.items():
+                if name_lower.split()[-1] in fallback_name or fallback_name.split()[-1] in name_lower:
+                    return stats
+
+        return None
 
 
 class InjuryFeatureBuilder:

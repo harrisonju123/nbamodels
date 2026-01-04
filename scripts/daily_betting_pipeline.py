@@ -23,6 +23,9 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import argparse
 from datetime import datetime, timezone
 from typing import List, Dict
@@ -41,9 +44,9 @@ PAPER_TRADING = True
 
 def get_todays_games() -> pd.DataFrame:
     """
-    Get today's games with features ready for prediction.
+    Get today's games with real model predictions.
 
-    TODO: Replace this with your actual feature pipeline.
+    Loads trained spread model and generates pred_diff values for today's games.
 
     Returns:
         DataFrame with columns:
@@ -56,47 +59,276 @@ def get_todays_games() -> pd.DataFrame:
         - away_b2b: Boolean, away team on back-to-back
         - rest_advantage: Home rest days - away rest days
     """
-    # PLACEHOLDER IMPLEMENTATION
-    # Replace with your actual data pipeline
-    logger.warning("Using placeholder get_todays_games() - replace with your pipeline!")
+    logger.info("Generating predictions for today's NBA games...")
 
-    # Example structure - replace with real data
-    games = pd.DataFrame({
-        'game_id': ['game_001', 'game_002'],
-        'home_team': ['LAL', 'GSW'],
-        'away_team': ['BOS', 'DEN'],
-        'commence_time': [
-            datetime.now(timezone.utc).isoformat(),
-            datetime.now(timezone.utc).isoformat()
-        ],
-        'pred_diff': [5.5, -3.2],  # Model predictions
-        'home_b2b': [False, True],
-        'away_b2b': [False, False],
-        'rest_advantage': [1, -1],
-    })
+    try:
+        import pickle
+        from src.data import NBAStatsClient
+        from src.features import GameFeatureBuilder
+        from datetime import datetime, timedelta
 
-    return games
+        # Load trained model
+        logger.info("Loading trained spread model...")
+        with open("models/spread_model.pkl", "rb") as f:
+            model_data = pickle.load(f)
+
+        model = model_data["model"]
+        feature_cols = model_data["feature_columns"]
+        logger.info(f"Loaded model with {len(feature_cols)} features")
+
+        # Initialize data clients
+        stats_client = NBAStatsClient()
+        odds_client = OddsAPIClient()
+        feature_builder = GameFeatureBuilder()
+
+        # Get recent games for feature building
+        logger.info("Fetching recent games for feature generation...")
+        end_date = datetime.now()
+        start_date = end_date - timedelta(days=60)
+        recent_games = stats_client.get_games(
+            start_date.strftime("%Y-%m-%d"),
+            end_date.strftime("%Y-%m-%d")
+        )
+
+        if recent_games.empty:
+            logger.warning("No recent games found - cannot generate features")
+            return _get_games_with_placeholder_predictions()
+
+        # Get current odds to find upcoming games
+        logger.info("Fetching current odds...")
+        odds = odds_client.get_current_odds()
+
+        if odds.empty:
+            logger.warning("No games with odds available")
+            return pd.DataFrame()
+
+        # Build team features from recent games
+        logger.info("Building team features...")
+        team_features = feature_builder.team_builder.build_all_features(recent_games)
+        latest_features = (
+            team_features
+            .sort_values("date")
+            .groupby("team")
+            .last()
+            .reset_index()
+        )
+
+        # Get unique upcoming games
+        upcoming_games = odds[["game_id", "home_team", "away_team", "commence_time"]].drop_duplicates()
+
+        # Build features for each game
+        logger.info(f"Building features for {len(upcoming_games)} games...")
+        records = []
+        for _, game in upcoming_games.iterrows():
+            home_team = _normalize_team_name(game["home_team"])
+            away_team = _normalize_team_name(game["away_team"])
+
+            home_stats = latest_features[latest_features["team"] == home_team]
+            away_stats = latest_features[latest_features["team"] == away_team]
+
+            if home_stats.empty or away_stats.empty:
+                logger.warning(f"Missing stats for {away_team} @ {home_team}")
+                continue
+
+            # Build feature row
+            record = {
+                "game_id": game["game_id"],
+                "commence_time": game["commence_time"],
+                "home_team": game["home_team"],
+                "away_team": game["away_team"],
+            }
+
+            # Add home team features
+            for col in home_stats.columns:
+                if col not in ["team", "game_id", "date", "season", "opponent"]:
+                    record[f"home_{col}"] = home_stats[col].values[0]
+
+            # Add away team features
+            for col in away_stats.columns:
+                if col not in ["team", "game_id", "date", "season", "opponent"]:
+                    record[f"away_{col}"] = away_stats[col].values[0]
+
+            records.append(record)
+
+        features_df = pd.DataFrame(records)
+
+        if features_df.empty:
+            logger.warning("Could not build features for any games")
+            return _get_games_with_placeholder_predictions()
+
+        # Add differential features
+        features_df = _add_differentials(features_df)
+
+        # Add placeholder schedule info (B2B, rest)
+        features_df['home_b2b'] = False
+        features_df['away_b2b'] = False
+        features_df['rest_advantage'] = features_df.get('rest_diff', 0)
+
+        # Generate predictions
+        logger.info("Generating model predictions...")
+        missing_cols = [c for c in feature_cols if c not in features_df.columns]
+        for col in missing_cols:
+            features_df[col] = 0  # Fill missing features with 0
+
+        X = features_df[feature_cols].fillna(0)
+        features_df['pred_diff'] = model.predict(X)
+
+        # Extract required columns
+        games_df = features_df[[
+            'game_id', 'home_team', 'away_team', 'commence_time',
+            'pred_diff', 'home_b2b', 'away_b2b', 'rest_advantage'
+        ]].copy()
+
+        # Ensure commence_time is in ISO format
+        if 'commence_time' in games_df.columns:
+            games_df['commence_time'] = pd.to_datetime(games_df['commence_time']).dt.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+        logger.success(f"Generated predictions for {len(games_df)} games")
+        logger.info(f"Average model prediction: {games_df['pred_diff'].mean():+.2f} pts")
+        logger.info(f"Prediction range: {games_df['pred_diff'].min():+.2f} to {games_df['pred_diff'].max():+.2f} pts")
+
+        return games_df
+
+    except FileNotFoundError as e:
+        logger.error(f"Model file not found: {e}")
+        logger.warning("Falling back to placeholder predictions")
+        return _get_games_with_placeholder_predictions()
+
+    except Exception as e:
+        logger.error(f"Error generating predictions: {e}")
+        import traceback
+        logger.debug(traceback.format_exc())
+        logger.warning("Falling back to placeholder predictions")
+        return _get_games_with_placeholder_predictions()
+
+
+def _normalize_team_name(name: str) -> str:
+    """Convert full team name to abbreviation."""
+    name_map = {
+        "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN",
+        "Charlotte Hornets": "CHA", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+        "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+        "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+        "Los Angeles Clippers": "LAC", "Los Angeles Lakers": "LAL", "Memphis Grizzlies": "MEM",
+        "Miami Heat": "MIA", "Milwaukee Bucks": "MIL", "Minnesota Timberwolves": "MIN",
+        "New Orleans Pelicans": "NOP", "New York Knicks": "NYK", "Oklahoma City Thunder": "OKC",
+        "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX",
+        "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC", "San Antonio Spurs": "SAS",
+        "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS",
+    }
+    return name_map.get(name, name)
+
+
+def _add_differentials(df: pd.DataFrame) -> pd.DataFrame:
+    """Add differential features between home and away teams."""
+    windows = [5, 10, 20]
+
+    for window in windows:
+        suffix = f"_{window}g"
+        for stat in ["pts_for", "pts_against", "net_rating", "pace", "win_rate"]:
+            home_col = f"home_{stat}{suffix}"
+            away_col = f"away_{stat}{suffix}"
+            if home_col in df.columns and away_col in df.columns:
+                df[f"diff_{stat}{suffix}"] = df[home_col] - df[away_col]
+
+    if "home_rest_days" in df.columns and "away_rest_days" in df.columns:
+        df["rest_diff"] = df["home_rest_days"] - df["away_rest_days"]
+
+    if "home_travel_distance" in df.columns and "away_travel_distance" in df.columns:
+        df["travel_diff"] = df["home_travel_distance"] - df["away_travel_distance"]
+
+    return df
+
+
+def _get_games_with_placeholder_predictions() -> pd.DataFrame:
+    """
+    Fallback: Get games with placeholder predictions if model loading fails.
+
+    This is the original implementation using placeholder pred_diff = 0.0
+    """
+    logger.info("Fetching today's NBA games from Odds API (placeholder mode)...")
+
+    odds_client = OddsAPIClient()
+
+    try:
+        # Fetch current games
+        odds_df = odds_client.get_current_odds(markets=['spreads'])
+
+        if odds_df.empty:
+            logger.warning("No games found for today")
+            return pd.DataFrame()
+
+        # Group by game to get unique games
+        games_df = odds_df.groupby('game_id').first().reset_index()
+
+        # Extract teams from game_id or use available data
+        games_df['home_team'] = games_df['home_team'] if 'home_team' in games_df.columns else 'HOME'
+        games_df['away_team'] = games_df['away_team'] if 'away_team' in games_df.columns else 'AWAY'
+
+        # Add placeholder predictions
+        logger.warning("Using placeholder model predictions (pred_diff = 0.0)")
+        games_df['pred_diff'] = 0.0  # Placeholder: no edge
+
+        # Add placeholder schedule info
+        games_df['home_b2b'] = False
+        games_df['away_b2b'] = False
+        games_df['rest_advantage'] = 0
+
+        # Ensure commence_time is in ISO format
+        if 'commence_time' in games_df.columns:
+            games_df['commence_time'] = pd.to_datetime(games_df['commence_time']).dt.strftime('%Y-%m-%dT%H:%M:%S%z')
+
+        logger.info(f"Found {len(games_df)} games for today")
+        return games_df[['game_id', 'home_team', 'away_team', 'commence_time',
+                        'pred_diff', 'home_b2b', 'away_b2b', 'rest_advantage']]
+
+    except Exception as e:
+        logger.error(f"Error fetching today's games: {e}")
+        return pd.DataFrame()
 
 
 def fetch_current_odds(game_ids: List[str] = None) -> pd.DataFrame:
     """
-    Fetch current odds from Odds API.
+    Fetch current odds from Odds API and reshape to wide format.
 
     Args:
         game_ids: Optional list of game IDs to filter
 
     Returns:
-        DataFrame with current odds
+        DataFrame with columns: game_id, market_spread, home_odds, away_odds, bookmaker
     """
     odds_client = OddsAPIClient()
 
     try:
         odds_df = odds_client.get_current_odds(markets=['spreads'])
 
+        if odds_df.empty:
+            return pd.DataFrame()
+
         if game_ids:
             odds_df = odds_df[odds_df['game_id'].isin(game_ids)]
 
-        return odds_df
+        # Reshape from long to wide format
+        # The 'team' column contains 'home' or 'away', not team names
+        home_odds = odds_df[odds_df['team'] == 'home'].copy()
+        away_odds = odds_df[odds_df['team'] == 'away'].copy()
+
+        # Rename columns for clarity
+        home_odds = home_odds.rename(columns={'line': 'market_spread', 'odds': 'home_odds'})
+        away_odds = away_odds.rename(columns={'odds': 'away_odds'})
+
+        # Merge home and away odds
+        merged = pd.merge(
+            home_odds[['game_id', 'bookmaker', 'market_spread', 'home_odds']],
+            away_odds[['game_id', 'bookmaker', 'away_odds']],
+            on=['game_id', 'bookmaker'],
+            how='inner'
+        )
+
+        # Get best odds per game (use first bookmaker for simplicity)
+        result = merged.groupby('game_id').first().reset_index()
+
+        return result
 
     except Exception as e:
         logger.error(f"Error fetching odds: {e}")

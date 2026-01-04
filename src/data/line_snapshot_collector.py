@@ -82,35 +82,33 @@ class LineSnapshotCollector:
         try:
             logger.info("Starting line snapshot collection...")
 
-        try:
             # Fetch current odds
-            odds_df = self.odds_client.get_current_odds(
-                markets=["h2h", "spreads", "totals"]
-            )
+            try:
+                odds_df = self.odds_client.get_current_odds(
+                    markets=["h2h", "spreads", "totals"]
+                )
 
-            if odds_df.empty:
-                logger.warning("No odds data returned from API")
-                return 0
+                if odds_df.empty:
+                    logger.warning("No odds data returned from API")
+                    return 0
 
-        except requests.exceptions.Timeout as e:
-            logger.error(f"API timeout during snapshot collection: {e}")
-            raise  # Re-raise to alert monitoring systems
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:
-                logger.error("Rate limit exceeded - consider upgrading API tier")
-            elif e.response.status_code == 401:
-                logger.error("Authentication failed - check API key")
-            else:
-                logger.error(f"HTTP error during snapshot collection: {e}")
-            raise
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Network error during snapshot collection: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Unexpected error fetching odds: {e}")
-            raise
-
-        try:
+            except requests.exceptions.Timeout as e:
+                logger.error(f"API timeout during snapshot collection: {e}")
+                raise  # Re-raise to alert monitoring systems
+            except requests.exceptions.HTTPError as e:
+                if e.response.status_code == 429:
+                    logger.error("Rate limit exceeded - consider upgrading API tier")
+                elif e.response.status_code == 401:
+                    logger.error("Authentication failed - check API key")
+                else:
+                    logger.error(f"HTTP error during snapshot collection: {e}")
+                raise
+            except requests.exceptions.RequestException as e:
+                logger.error(f"Network error during snapshot collection: {e}")
+                raise
+            except Exception as e:
+                logger.error(f"Unexpected error fetching odds: {e}")
+                raise
 
             # Filter to games within collection window (use UTC for consistency)
             now = datetime.now(timezone.utc)
@@ -136,10 +134,6 @@ class LineSnapshotCollector:
             logger.info(f"Saved {count} snapshot records")
 
             return count
-
-        except Exception as e:
-            logger.error(f"Error during snapshot collection: {e}")
-            raise
 
         finally:
             # Release file lock

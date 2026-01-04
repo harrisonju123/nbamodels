@@ -17,6 +17,15 @@ from sklearn.isotonic import IsotonicRegression
 from sklearn.metrics import accuracy_score, roc_auc_score, brier_score_loss
 from loguru import logger
 
+from src.utils.constants import (
+    SPREAD_TO_PROB_FACTOR,
+    MIN_DISAGREEMENT,
+    MIN_EDGE_VS_MARKET,
+    MIN_EDGE_VS_ELO,
+    MIN_PROBABILITY,
+    MAX_PROBABILITY,
+)
+
 try:
     from xgboost import XGBClassifier
     HAS_XGBOOST = True
@@ -176,8 +185,8 @@ class DualPredictionModel:
         xgb_raw = self.xgb.predict_proba(X_values)[:, 1]
 
         # Calibrated predictions
-        mlp_prob = np.clip(self.mlp_calibrator.predict(mlp_raw), 0.001, 0.999)
-        xgb_prob = np.clip(self.xgb_calibrator.predict(xgb_raw), 0.001, 0.999)
+        mlp_prob = np.clip(self.mlp_calibrator.predict(mlp_raw), MIN_PROBABILITY, MAX_PROBABILITY)
+        xgb_prob = np.clip(self.xgb_calibrator.predict(xgb_raw), MIN_PROBABILITY, MAX_PROBABILITY)
 
         # Ensemble (40% MLP, 60% XGB)
         ensemble_prob = 0.4 * mlp_prob + 0.6 * xgb_prob
@@ -186,7 +195,10 @@ class DualPredictionModel:
         mlp_spread = self._prob_to_spread(mlp_prob)
         xgb_spread = self._prob_to_spread(xgb_prob)
 
-        # Disagreement score (positive = MLP thinks home is better)
+        # Disagreement score
+        # ACTUAL BEHAVIOR: Positive disagreement means mlp_spread > xgb_spread
+        # This means XGB is MORE bullish on home than MLP
+        # Strategy trusts XGB when disagreement is high (XGB more conservative/accurate)
         disagreement = mlp_spread - xgb_spread
 
         return {
@@ -201,12 +213,12 @@ class DualPredictionModel:
     @staticmethod
     def _prob_to_spread(prob: np.ndarray) -> np.ndarray:
         """Convert win probability to implied spread."""
-        return -((prob - 0.5) * 28)
+        return -((prob - 0.5) * SPREAD_TO_PROB_FACTOR)
 
     @staticmethod
     def _spread_to_prob(spread: np.ndarray) -> np.ndarray:
         """Convert spread to implied probability."""
-        return 0.5 - spread / 28
+        return 0.5 - spread / SPREAD_TO_PROB_FACTOR
 
     def get_predictions(
         self,
@@ -250,9 +262,8 @@ class DualPredictionModel:
             result['mlp_edge_vs_vegas'] = preds['mlp_spread'] - vegas_spread
 
         # Betting signals - validated against real Vegas (58% ATS, +11% ROI)
-        # Requires: disagreement >= 5 AND edge vs market >= 5
-        min_disagree = 5.0
-        min_edge = 5.0
+        min_disagree = MIN_DISAGREEMENT
+        min_edge = MIN_EDGE_VS_MARKET
 
         if vegas_spread is not None:
             # Use real Vegas edge

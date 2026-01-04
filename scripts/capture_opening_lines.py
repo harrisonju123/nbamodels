@@ -18,6 +18,9 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 from loguru import logger
 from src.data.line_snapshot_collector import LineSnapshotCollector
 

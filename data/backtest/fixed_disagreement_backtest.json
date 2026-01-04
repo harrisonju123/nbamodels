@@ -1,0 +1,53 @@
+{
+  "run_date": "2026-01-03T19:18:21.745697",
+  "test_seasons": [
+    2020,
+    2021,
+    2022,
+    2023,
+    2024
+  ],
+  "settings": {
+    "kelly_fraction": 0.25,
+    "min_disagreement": 4.0,
+    "min_edge_vs_market": 2.0,
+    "home_only": true,
+    "spread_odds": -110
+  },
+  "results": {
+    "initial_bankroll": 1000.0,
+    "final_bankroll": 463.29123015975347,
+    "total_wagered": 536.7087698402468,
+    "total_pnl": -536.7087698402465,
+    "roi": -0.9999999999999996,
+    "ats_win_rate": 0.0,
+    "num_bets": 15,
+    "max_drawdown": 0.5367087698402465,
+    "sharpe_ratio": -2.0838019480474156e+16,
+    "kelly_fraction_used": 0.25,
+    "min_disagreement": 4.0,
+    "avg_disagreement": 11.919746357227837,
+    "home_bets": 15,
+    "away_bets": 0,
+    "home_ats_pct": 0.0,
+    "away_ats_pct": 0.0
+  },
+  "bankroll_history": [
+    1000.0,
+    950.0,
+    902.5,
+    857.375,
+    814.50625,
+    773.7809375,
+    735.091890625,
+    698.3372960937501,
+    663.4204312890625,
+    630.2494097246094,
+    598.736939238379,
+    568.8000922764601,
+    540.360087662637,
+    513.3420832795052,
+    487.67497911553,
+    463.29123015975347
+  ]
+}

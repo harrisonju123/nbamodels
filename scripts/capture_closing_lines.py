@@ -18,6 +18,9 @@ from pathlib import Path
 # Add parent directory to path for imports
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
+from dotenv import load_dotenv
+load_dotenv()
+
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional

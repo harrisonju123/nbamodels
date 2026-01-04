@@ -1,16 +1,15 @@
 """
 Sentiment Feature Builder
 
-Aggregates social sentiment from Reddit and Twitter.
-Returns neutral defaults when API credentials not configured.
+Aggregates public betting sentiment from free web scraping sources.
+Uses Reddit's public JSON API (no authentication required).
 """
 
 from typing import Dict
 import pandas as pd
 from loguru import logger
 
-from src.data.reddit_client import RedditClient
-from src.data.twitter_client import TwitterClient
+from src.data.public_sentiment_scraper import PublicSentimentScraper
 
 
 class SentimentFeatureBuilder:
@@ -18,23 +17,19 @@ class SentimentFeatureBuilder:
     Build social sentiment features for NBA predictions.
 
     Features generated:
-    - home_reddit_sentiment: Reddit sentiment for home team (-1 to 1)
-    - away_reddit_sentiment: Reddit sentiment for away team (-1 to 1)
-    - home_twitter_sentiment: Twitter sentiment for home team (-1 to 1)
-    - away_twitter_sentiment: Twitter sentiment for away team (-1 to 1)
-    - home_sentiment_avg: Average of Reddit + Twitter
-    - away_sentiment_avg: Average of Reddit + Twitter
-    - sentiment_enabled: Boolean flag for API availability
+    - home_sentiment: Public sentiment for home team (-1 to 1)
+    - away_sentiment: Public sentiment for away team (-1 to 1)
+    - home_sentiment_volume: Number of mentions for home team
+    - away_sentiment_volume: Number of mentions for away team
+    - sentiment_diff: Difference in sentiment (home - away)
+    - sentiment_enabled: Always True (free scraping, no API keys needed)
     """
 
     def __init__(self):
         """Initialize sentiment feature builder."""
-        self.reddit = RedditClient()
-        self.twitter = TwitterClient()
-        self.enabled = self.reddit.enabled or self.twitter.enabled
-
-        if not self.enabled:
-            logger.info("Social sentiment APIs not configured - features will return neutral defaults")
+        self.scraper = PublicSentimentScraper()
+        self.enabled = True  # Always enabled - uses free public data
+        logger.debug("Sentiment feature builder initialized with free public scraping")
 
     def get_game_features(
         self,
@@ -51,28 +46,21 @@ class SentimentFeatureBuilder:
         Returns:
             Dictionary of sentiment features
         """
-        # Get Reddit sentiment
-        reddit_data = self.reddit.get_game_sentiment(home_team, away_team)
-        home_reddit = reddit_data.get("home_sentiment", 0.0)
-        away_reddit = reddit_data.get("away_sentiment", 0.0)
+        # Get sentiment from public scraping
+        home_data = self.scraper.get_team_sentiment(home_team)
+        away_data = self.scraper.get_team_sentiment(away_team)
 
-        # Get Twitter sentiment
-        twitter_data = self.twitter.get_game_sentiment(home_team, away_team)
-        home_twitter = twitter_data.get("home_sentiment", 0.0)
-        away_twitter = twitter_data.get("away_sentiment", 0.0)
-
-        # Calculate averages
-        home_avg = (home_reddit + home_twitter) / 2
-        away_avg = (away_reddit + away_twitter) / 2
+        home_sentiment = home_data.get("sentiment", 0.0)
+        away_sentiment = away_data.get("sentiment", 0.0)
+        home_volume = home_data.get("volume", 0)
+        away_volume = away_data.get("volume", 0)
 
         return {
-            "home_reddit_sentiment": round(home_reddit, 3),
-            "away_reddit_sentiment": round(away_reddit, 3),
-            "home_twitter_sentiment": round(home_twitter, 3),
-            "away_twitter_sentiment": round(away_twitter, 3),
-            "home_sentiment_avg": round(home_avg, 3),
-            "away_sentiment_avg": round(away_avg, 3),
-            "sentiment_diff": round(home_avg - away_avg, 3),
+            "home_sentiment": round(home_sentiment, 3),
+            "away_sentiment": round(away_sentiment, 3),
+            "home_sentiment_volume": home_volume,
+            "away_sentiment_volume": away_volume,
+            "sentiment_diff": round(home_sentiment - away_sentiment, 3),
             "sentiment_enabled": self.enabled,
         }
 
@@ -112,7 +100,8 @@ if __name__ == "__main__":
 
     print("Sentiment Feature Builder Test")
     print("=" * 60)
-    print(f"Sentiment APIs enabled: {builder.enabled}")
+    print(f"Sentiment enabled: {builder.enabled}")
+    print("Using FREE public web scraping (no API keys required)")
 
     # Get features for a matchup
     features = builder.get_game_features("LAL", "BOS")
@@ -121,4 +110,4 @@ if __name__ == "__main__":
         print(f"  {k}: {v}")
 
     print("\n" + "=" * 60)
-    print("All sentiment values are neutral (0.0) until APIs configured")
+    print("Sentiment values based on r/sportsbook public discussions")

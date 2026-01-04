@@ -1,16 +1,18 @@
 #!/usr/bin/env python3
 """
-Collect Social Sentiment - Cron Script (STUBBED)
+Collect Public Sentiment - Cron Script
 
-Collects NBA sentiment from Reddit and Twitter.
-Currently stubbed - exits gracefully if API credentials not configured.
+Scrapes public betting sentiment from free sources (no API keys required):
+- Reddit r/sportsbook via public JSON API
+- No authentication needed
 
-Cron schedule (disabled until APIs configured):
-# */15 17-23 * * * cd /Users/harrisonju/PycharmProjects/nbamodels && python scripts/collect_sentiment.py >> logs/sentiment.log 2>&1
+Cron schedule:
+*/15 17-23 * * * cd /Users/harrisonju/PycharmProjects/nbamodels && python scripts/collect_sentiment.py >> logs/sentiment.log 2>&1
 """
 
 import sys
 import os
+import fcntl
 from datetime import datetime
 from pathlib import Path
 
@@ -21,47 +23,63 @@ sys.path.insert(0, str(project_root))
 from dotenv import load_dotenv
 from loguru import logger
 
-from src.data.reddit_client import RedditClient
-from src.data.twitter_client import TwitterClient
+from src.data.public_sentiment_scraper import PublicSentimentScraper
 
 # Load environment variables
 load_dotenv()
+
+# Lock file to prevent concurrent execution
+LOCK_FILE = "/tmp/nba_sentiment_collector.lock"
 
 
 def main():
     """Main collection function."""
     logger.info("=" * 60)
-    logger.info("Starting social sentiment collection")
+    logger.info("Starting public sentiment collection")
     logger.info(f"Time: {datetime.now().isoformat()}")
     logger.info("=" * 60)
 
-    # Check if APIs are configured
-    reddit = RedditClient()
-    twitter = TwitterClient()
-
-    if not reddit.enabled and not twitter.enabled:
-        logger.warning("Neither Reddit nor Twitter APIs are configured")
-        logger.info("To enable sentiment collection:")
-        logger.info("  1. Get Reddit API credentials: https://www.reddit.com/prefs/apps")
-        logger.info("  2. Get Twitter Bearer Token: https://developer.twitter.com/")
-        logger.info("  3. Add to .env file (see .env.example)")
-        logger.info("Exiting gracefully")
+    # File locking to prevent concurrent cron runs
+    lock_fd = open(LOCK_FILE, 'w')
+    try:
+        fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except IOError:
+        logger.warning("Another sentiment collection process is running - skipping")
         return 0
 
-    logger.info(f"Reddit enabled: {reddit.enabled}")
-    logger.info(f"Twitter enabled: {twitter.enabled}")
+    try:
+        scraper = PublicSentimentScraper()
 
-    # TODO: Implement actual sentiment collection when APIs configured
-    # Would:
-    # 1. Get today's games
-    # 2. Collect sentiment for each team
-    # 3. Store in database
+        # Scrape r/sportsbook public JSON
+        logger.info("Scraping r/sportsbook...")
+        sentiment_data = scraper.scrape_reddit_sportsbook(limit=100)
 
-    logger.info("=" * 60)
-    logger.info("Sentiment collection completed (stubbed)")
-    logger.info("=" * 60)
+        if not sentiment_data.empty:
+            logger.info(f"Found {len(sentiment_data)} team mentions")
 
-    return 0
+            # Save to database
+            inserted = scraper.save_sentiment_data(sentiment_data)
+            logger.info(f"Saved {inserted} new sentiment mentions")
+
+            # Aggregate daily scores
+            updated = scraper.aggregate_sentiment_scores()
+            logger.info(f"Aggregated sentiment for {updated} teams")
+        else:
+            logger.warning("No sentiment data found")
+
+        logger.info("=" * 60)
+        logger.info("Sentiment collection completed successfully")
+        logger.info("=" * 60)
+
+        return 0
+
+    except Exception as e:
+        logger.error(f"Sentiment collection failed: {e}")
+        return 1
+
+    finally:
+        fcntl.flock(lock_fd, fcntl.LOCK_UN)
+        lock_fd.close()
 
 
 if __name__ == "__main__":

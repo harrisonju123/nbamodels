@@ -746,19 +746,29 @@ with tab5:
                 st.markdown("#### 📈 Spread Picks (ATS Model)")
                 ats_df = predictions['ats']
 
-                # Show only games with bets
-                ats_bets = ats_df[
-                    (ats_df.get('bet_home', False) == True) |
-                    (ats_df.get('bet_away', False) == True)
-                ]
+                # Show only games with actual bets (not PASS)
+                # Use bet_side column if available, otherwise fall back to bet_home/bet_away flags
+                if 'bet_side' in ats_df.columns:
+                    ats_bets = ats_df[ats_df['bet_side'].isin(['HOME', 'AWAY'])]
+                else:
+                    ats_bets = ats_df[
+                        (ats_df.get('bet_home', False) == True) |
+                        (ats_df.get('bet_away', False) == True)
+                    ]
 
                 if not ats_bets.empty:
                     for _, row in ats_bets.iterrows():
-                        bet_team = row['home_team'] if row.get('bet_home') else row['away_team']
-                        bet_side = 'home' if row.get('bet_home') else 'away'
-                        line = row.get('spread_home', 0) if row.get('bet_home') else -row.get('spread_home', 0)
-                        edge = row.get('home_edge', 0) if row.get('bet_home') else row.get('away_edge', 0)
-                        kelly = row.get('home_kelly', 0) if row.get('bet_home') else row.get('away_kelly', 0)
+                        # Determine bet side from bet_side column or bet_home/bet_away flags
+                        if 'bet_side' in row and pd.notna(row['bet_side']) and row['bet_side'] != 'PASS':
+                            is_betting_home = row['bet_side'] == 'HOME'
+                        else:
+                            is_betting_home = row.get('bet_home', False)
+
+                        bet_team = row['home_team'] if is_betting_home else row['away_team']
+                        bet_side = 'home' if is_betting_home else 'away'
+                        line = row.get('line', row.get('spread_home', 0)) if is_betting_home else -row.get('line', -row.get('spread_home', 0))
+                        edge = row.get('edge_vs_market', row.get('home_edge', 0)) if is_betting_home else row.get('away_edge', 0)
+                        kelly = row.get('kelly', row.get('home_kelly', 0)) if is_betting_home else row.get('away_kelly', 0)
 
                         with st.expander(f"**{row['away_team']} @ {row['home_team']}**", expanded=True):
                             col1, col2, col3 = st.columns(3)
@@ -795,19 +805,28 @@ with tab5:
                 st.markdown("#### 💰 Moneyline Picks (Stacking Ensemble)")
                 stack_df = predictions['stacking']
 
-                # Show only games with bets
-                ml_bets = stack_df[
-                    (stack_df.get('bet_home', False) == True) |
-                    (stack_df.get('bet_away', False) == True)
-                ]
+                # Show only games with actual bets (not PASS)
+                if 'bet_side' in stack_df.columns:
+                    ml_bets = stack_df[stack_df['bet_side'].isin(['HOME', 'AWAY'])]
+                else:
+                    ml_bets = stack_df[
+                        (stack_df.get('bet_home', False) == True) |
+                        (stack_df.get('bet_away', False) == True)
+                    ]
 
                 if not ml_bets.empty:
                     for _, row in ml_bets.iterrows():
-                        bet_team = row['home_team'] if row.get('bet_home') else row['away_team']
-                        bet_side = 'home' if row.get('bet_home') else 'away'
-                        odds = row.get('best_home_odds', -110) if row.get('bet_home') else row.get('best_away_odds', -110)
-                        prob = row.get('stack_home_prob_adj', 0.5) if row.get('bet_home') else row.get('stack_away_prob_adj', 0.5)
-                        kelly = row.get('home_kelly', 0) if row.get('bet_home') else row.get('away_kelly', 0)
+                        # Determine bet side from bet_side column or bet_home/bet_away flags
+                        if 'bet_side' in row and pd.notna(row['bet_side']) and row['bet_side'] != 'PASS':
+                            is_betting_home = row['bet_side'] == 'HOME'
+                        else:
+                            is_betting_home = row.get('bet_home', False)
+
+                        bet_team = row['home_team'] if is_betting_home else row['away_team']
+                        bet_side = 'home' if is_betting_home else 'away'
+                        odds = row.get('best_home_odds', -110) if is_betting_home else row.get('best_away_odds', -110)
+                        prob = row.get('stack_home_prob_adj', 0.5) if is_betting_home else row.get('stack_away_prob_adj', 0.5)
+                        kelly = row.get('kelly', row.get('home_kelly', 0)) if is_betting_home else row.get('away_kelly', 0)
                         confidence = row.get('confidence', 'Medium')
 
                         with st.expander(f"**{row['away_team']} @ {row['home_team']}**", expanded=True):
@@ -843,15 +862,21 @@ with tab5:
                     st.info("No moneyline picks with edge today")
 
             # Show message if no predictions with bets
-            has_ats_bets = ('ats' in predictions and
-                           predictions['ats'] is not None and
-                           not predictions['ats'].empty and
-                           any(predictions['ats'].get('bet_home', False) | predictions['ats'].get('bet_away', False)))
+            has_ats_bets = False
+            if 'ats' in predictions and predictions['ats'] is not None and not predictions['ats'].empty:
+                ats_df = predictions['ats']
+                if 'bet_side' in ats_df.columns:
+                    has_ats_bets = any(ats_df['bet_side'].isin(['HOME', 'AWAY']))
+                else:
+                    has_ats_bets = any(ats_df.get('bet_home', False) | ats_df.get('bet_away', False))
 
-            has_ml_bets = ('stacking' in predictions and
-                          predictions['stacking'] is not None and
-                          not predictions['stacking'].empty and
-                          any(predictions['stacking'].get('bet_home', False) | predictions['stacking'].get('bet_away', False)))
+            has_ml_bets = False
+            if 'stacking' in predictions and predictions['stacking'] is not None and not predictions['stacking'].empty:
+                stack_df = predictions['stacking']
+                if 'bet_side' in stack_df.columns:
+                    has_ml_bets = any(stack_df['bet_side'].isin(['HOME', 'AWAY']))
+                else:
+                    has_ml_bets = any(stack_df.get('bet_home', False) | stack_df.get('bet_away', False))
 
             if not (has_ats_bets or has_ml_bets):
                 st.info("No predictions with positive edge today. Click Refresh to reload.")

@@ -152,8 +152,8 @@ def load_bets_data(start_date=None, end_date=None):
     if df.empty:
         return df
 
-    # Convert date strings to datetime
-    df['logged_at'] = pd.to_datetime(df['logged_at'])
+    # Convert date strings to datetime (handle ISO8601 format with timezone)
+    df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
 
     # Filter by date range
     if start_date:
@@ -463,8 +463,9 @@ def create_daily_performance_heatmap(df):
     if len(df_settled) < 20:
         return None
 
-    df_settled['day_of_week'] = pd.to_datetime(df_settled['logged_at']).dt.day_name()
-    df_settled['hour'] = pd.to_datetime(df_settled['logged_at']).dt.hour
+    # logged_at is already datetime from load_bets_data()
+    df_settled['day_of_week'] = df_settled['logged_at'].dt.day_name()
+    df_settled['hour'] = df_settled['logged_at'].dt.hour
 
     # Calculate win rate by day and hour
     pivot = df_settled.groupby(['day_of_week', 'hour']).agg({

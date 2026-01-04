@@ -210,7 +210,7 @@ def get_summary(
         # Filter by date if specified
         if days:
             cutoff = datetime.now() - timedelta(days=days)
-            df['logged_at'] = pd.to_datetime(df['logged_at'])
+            df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
             df = df[df['logged_at'] >= cutoff]
 
         total_bets = len(df)
@@ -256,7 +256,7 @@ def get_performance(
 
         if days and not df.empty:
             cutoff = datetime.now() - timedelta(days=days)
-            df['logged_at'] = pd.to_datetime(df['logged_at'])
+            df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
             df = df[df['logged_at'] >= cutoff]
 
         return calculate_performance_metrics(df)
@@ -341,7 +341,7 @@ def get_clv(
 
         if days:
             cutoff = datetime.now() - timedelta(days=days)
-            df['logged_at'] = pd.to_datetime(df['logged_at'])
+            df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
             df = df[df['logged_at'] >= cutoff]
 
         df_clv = df[df['clv'].notna()]
@@ -397,7 +397,7 @@ def get_live_update():
 
         # Today's data
         today = datetime.now().date()
-        df['placed_date'] = pd.to_datetime(df['logged_at']).dt.date
+        df['placed_date'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True).dt.date
 
         todays_bets = df[df['placed_date'] == today]
         todays_settled = todays_bets[todays_bets['outcome'].notna()]
@@ -433,7 +433,7 @@ def get_daily_stats(
             return []
 
         # Convert to datetime
-        df['logged_at'] = pd.to_datetime(df['logged_at'])
+        df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
         df['date'] = df['logged_at'].dt.date
 
         # Filter to last N days

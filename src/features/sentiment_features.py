@@ -2,10 +2,11 @@
 Sentiment Feature Builder
 
 Aggregates public betting sentiment from free web scraping sources.
-Uses Reddit's public JSON API (no authentication required).
+Uses Reddit's HTML scraping (no authentication required).
 """
 
 from typing import Dict
+from datetime import datetime, timedelta
 import pandas as pd
 from loguru import logger
 
@@ -26,10 +27,61 @@ class SentimentFeatureBuilder:
     """
 
     def __init__(self):
-        """Initialize sentiment feature builder."""
+        """Initialize sentiment feature builder with caching (fixes Issue #15)."""
         self.scraper = PublicSentimentScraper()
         self.enabled = True  # Always enabled - uses free public data
+
+        # Cache for batch operations
+        self._cache = {}
+        self._cache_time = None
+        self._cache_ttl = timedelta(minutes=15)  # Match cron schedule
+
         logger.debug("Sentiment feature builder initialized with free public scraping")
+
+    def _get_cached_sentiments(self, date: str) -> Dict[str, Dict]:
+        """
+        Get all team sentiments with caching (fixes Issue #15).
+
+        Args:
+            date: Date in YYYY-MM-DD format
+
+        Returns:
+            Dictionary mapping team abbreviations to sentiment data
+        """
+        now = datetime.now()
+
+        # Check cache validity
+        if self._cache_time and (now - self._cache_time) < self._cache_ttl:
+            logger.debug(f"Using cached sentiment data (age: {(now - self._cache_time).seconds}s)")
+            return self._cache
+
+        # Refresh cache - batch query all teams at once
+        logger.debug(f"Refreshing sentiment cache for {date}")
+
+        conn = self.scraper._get_connection()
+        try:
+            cursor = conn.execute("""
+                SELECT team_abbrev, sentiment_score, total_mentions
+                FROM sentiment_scores
+                WHERE date = ?
+            """, (date,))
+
+            cache = {}
+            for row in cursor.fetchall():
+                cache[row['team_abbrev']] = {
+                    'sentiment': row['sentiment_score'],
+                    'volume': row['total_mentions'],
+                    'enabled': True
+                }
+
+            self._cache = cache
+            self._cache_time = now
+
+            logger.debug(f"Cached sentiment for {len(cache)} teams")
+            return cache
+
+        finally:
+            conn.close()
 
     def get_game_features(
         self,
@@ -39,6 +91,8 @@ class SentimentFeatureBuilder:
         """
         Get sentiment features for a game matchup.
 
+        Uses caching for better performance (fixes Issue #15).
+
         Args:
             home_team: Home team abbreviation
             away_team: Away team abbreviation
@@ -46,14 +100,19 @@ class SentimentFeatureBuilder:
         Returns:
             Dictionary of sentiment features
         """
-        # Get sentiment from public scraping
-        home_data = self.scraper.get_team_sentiment(home_team)
-        away_data = self.scraper.get_team_sentiment(away_team)
+        date = datetime.now().strftime("%Y-%m-%d")
 
-        home_sentiment = home_data.get("sentiment", 0.0)
-        away_sentiment = away_data.get("sentiment", 0.0)
-        home_volume = home_data.get("volume", 0)
-        away_volume = away_data.get("volume", 0)
+        # Use cached batch query
+        sentiments = self._get_cached_sentiments(date)
+
+        # Get team data with defaults
+        home_data = sentiments.get(home_team, {'sentiment': 0.0, 'volume': 0, 'enabled': True})
+        away_data = sentiments.get(away_team, {'sentiment': 0.0, 'volume': 0, 'enabled': True})
+
+        home_sentiment = home_data['sentiment']
+        away_sentiment = away_data['sentiment']
+        home_volume = home_data['volume']
+        away_volume = away_data['volume']
 
         return {
             "home_sentiment": round(home_sentiment, 3),
@@ -73,6 +132,8 @@ class SentimentFeatureBuilder:
         """
         Generate sentiment features for multiple games.
 
+        Optimized batch query (fixes Issue #7 - N+1 problem).
+
         Args:
             games_df: DataFrame with game information
             home_team_col: Column name for home team
@@ -81,14 +142,25 @@ class SentimentFeatureBuilder:
         Returns:
             DataFrame with sentiment features added
         """
-        features_list = []
+        date = datetime.now().strftime("%Y-%m-%d")
 
+        # Single batch query for all teams (avoids N+1 problem)
+        sentiments = self._get_cached_sentiments(date)
+
+        # Build features using cached data
+        features_list = []
         for _, game in games_df.iterrows():
-            features = self.get_game_features(
-                home_team=game[home_team_col],
-                away_team=game[away_team_col]
-            )
-            features_list.append(features)
+            home = sentiments.get(game[home_team_col], {'sentiment': 0.0, 'volume': 0})
+            away = sentiments.get(game[away_team_col], {'sentiment': 0.0, 'volume': 0})
+
+            features_list.append({
+                "home_sentiment": round(home['sentiment'], 3),
+                "away_sentiment": round(away['sentiment'], 3),
+                "home_sentiment_volume": home['volume'],
+                "away_sentiment_volume": away['volume'],
+                "sentiment_diff": round(home['sentiment'] - away['sentiment'], 3),
+                "sentiment_enabled": self.enabled,
+            })
 
         features_df = pd.DataFrame(features_list)
         return pd.concat([games_df.reset_index(drop=True), features_df], axis=1)
@@ -101,7 +173,7 @@ if __name__ == "__main__":
     print("Sentiment Feature Builder Test")
     print("=" * 60)
     print(f"Sentiment enabled: {builder.enabled}")
-    print("Using FREE public web scraping (no API keys required)")
+    print("Using FREE HTML scraping (no API keys required)")
 
     # Get features for a matchup
     features = builder.get_game_features("LAL", "BOS")
@@ -109,5 +181,18 @@ if __name__ == "__main__":
     for k, v in features.items():
         print(f"  {k}: {v}")
 
+    # Test batch operation
     print("\n" + "=" * 60)
-    print("Sentiment values based on r/sportsbook public discussions")
+    print("Testing batch operation (multiple games)...")
+
+    test_games = pd.DataFrame({
+        "home_team": ["LAL", "GSW", "BOS"],
+        "away_team": ["BOS", "LAC", "PHI"],
+    })
+
+    result = builder.get_features_for_games(test_games)
+    print(f"\nProcessed {len(result)} games in single batch query")
+    print(result[["home_team", "away_team", "home_sentiment", "away_sentiment", "sentiment_diff"]])
+
+    print("\n" + "=" * 60)
+    print("Sentiment values based on r/sportsbook HTML scraping")

@@ -72,6 +72,7 @@ class EdgeStrategy:
         small_spread_range: tuple = (-3, 3),
         teams_to_exclude: Optional[Set[str]] = None,
         use_team_filter: bool = False,
+        home_only: bool = False,  # Only bet on home teams (better historical performance)
         # Market microstructure signal filters
         require_steam_alignment: bool = False,
         require_rlm_alignment: bool = False,
@@ -110,6 +111,7 @@ class EdgeStrategy:
         self.require_rest_aligns = require_rest_aligns
         self.small_spread_only = small_spread_only
         self.small_spread_range = small_spread_range
+        self.home_only = home_only
 
         # Market signal filters
         self.require_steam_alignment = require_steam_alignment
@@ -197,17 +199,21 @@ class EdgeStrategy:
             bet_side = "AWAY"
             filters_passed.append(f"edge <= -{self.edge_threshold}")
 
-            # Check B2B filter
-            if self.require_no_b2b and away_b2b:
+            # Check home_only filter (block all away bets)
+            if self.home_only:
                 bet_side = "PASS"
             else:
-                filters_passed.append("no_away_b2b")
+                # Check B2B filter
+                if self.require_no_b2b and away_b2b:
+                    bet_side = "PASS"
+                else:
+                    filters_passed.append("no_away_b2b")
 
-            # Check rest alignment
-            if self.require_rest_aligns and rest_advantage > 0:
-                bet_side = "PASS"
-            elif rest_advantage <= 0:
-                filters_passed.append("rest_aligns")
+                # Check rest alignment
+                if self.require_rest_aligns and rest_advantage > 0:
+                    bet_side = "PASS"
+                elif rest_advantage <= 0:
+                    filters_passed.append("rest_aligns")
 
         # Check small spread filter
         if bet_side != "PASS" and self.small_spread_only:
@@ -645,8 +651,12 @@ class EdgeStrategy:
         """
         Create CLV-filtered strategy.
 
-        Edge 5+ & No B2B & Team Filter & CLV Filter
+        Edge 5+ & No B2B & Team Filter & CLV Filter & HOME ONLY
         Only bets with historically positive CLV (+1% minimum)
+
+        Note: Away bets disabled due to poor historical performance:
+        - HOME: 56.2% win rate, +8.5% ROI
+        - AWAY: 35.7% win rate, -34.7% ROI
         """
         return cls(
             edge_threshold=5.0,
@@ -654,6 +664,7 @@ class EdgeStrategy:
             use_team_filter=True,
             clv_filter_enabled=True,
             min_historical_clv=0.01,  # Require +1% historical CLV
+            home_only=True,  # Disable away bets due to poor performance
         )
 
     @classmethod

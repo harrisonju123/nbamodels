@@ -147,7 +147,13 @@ with st.sidebar:
 @st.cache_data(ttl=60)
 def load_bets_data(start_date=None, end_date=None):
     """Load bets from database with caching."""
+    # Limit to prevent memory issues with large datasets
+    # Dashboard shows recent data - no need to load entire history
     df = get_bet_history()
+
+    # Hard limit to last 10,000 bets for performance
+    if len(df) > 10000:
+        df = df.nlargest(10000, 'logged_at')
 
     if df.empty:
         return df
@@ -670,12 +676,16 @@ with tab4:
 
 # Footer
 st.markdown("---")
+# Safe: Use separate st.markdown calls - no dynamic content with unsafe_allow_html
 st.markdown(
     """
     <div style='text-align: center; color: gray; padding: 20px;'>
         <p>NBA Betting Analytics Dashboard | Data updates every 60 seconds</p>
-        <p>🔄 Last updated: {}</p>
     </div>
-    """.format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
+    """,
     unsafe_allow_html=True
+)
+st.markdown(
+    f"🔄 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+    unsafe_allow_html=False  # Explicit: no HTML in dynamic content
 )

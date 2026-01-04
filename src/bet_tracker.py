@@ -60,6 +60,19 @@ def _get_connection() -> sqlite3.Connection:
     conn.execute("""
         CREATE INDEX IF NOT EXISTS idx_bets_outcome ON bets(outcome)
     """)
+    # Additional indexes for common query patterns
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bets_logged_at ON bets(logged_at DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bets_settled_at ON bets(settled_at DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bets_bookmaker ON bets(bookmaker)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bets_bet_type ON bets(bet_type)
+    """)
 
     # Create line_snapshots table for hourly odds tracking
     conn.execute("""
@@ -207,16 +220,6 @@ def log_bet(
     conn = _get_connection()
     bet_id = f"{game_id}_{bet_type}_{bet_side}"
 
-    # Check for duplicate
-    existing = conn.execute(
-        "SELECT * FROM bets WHERE id = ?", (bet_id,)
-    ).fetchone()
-
-    if existing:
-        logger.info(f"Bet already logged: {bet_id}")
-        conn.close()
-        return dict(existing)
-
     logged_at = datetime.now().isoformat()
 
     # Calculate bet amount using Kelly if not provided
@@ -237,8 +240,9 @@ def log_bet(
         kelly_bet = (edge * decimal_odds - (1 - model_prob)) / b if b > 0 else 0
         bet_amount = max(10.0, min(50.0, kelly_bet * kelly_fraction * bankroll))  # Min $10, max $50
 
-    conn.execute("""
-        INSERT INTO bets (
+    # Use INSERT OR IGNORE to prevent race condition duplicates
+    cursor = conn.execute("""
+        INSERT OR IGNORE INTO bets (
             id, game_id, home_team, away_team, commence_time,
             bet_type, bet_side, odds, line, model_prob, market_prob,
             edge, kelly, bookmaker, logged_at, bet_amount
@@ -306,8 +310,9 @@ def log_manual_bet(
 
     logged_at = datetime.now().isoformat()
 
-    conn.execute("""
-        INSERT INTO bets (
+    # Use INSERT OR IGNORE to prevent race condition duplicates
+    cursor = conn.execute("""
+        INSERT OR IGNORE INTO bets (
             id, game_id, home_team, away_team, commence_time,
             bet_type, bet_side, odds, line, bet_amount,
             model_prob, market_prob, edge, bookmaker, logged_at

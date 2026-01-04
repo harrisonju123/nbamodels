@@ -10,9 +10,10 @@ Provides REST API endpoints for:
 Run with: uvicorn api.dashboard_api:app --reload --port 8000
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Depends, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel
 from typing import List, Optional, Dict, Any
 from datetime import datetime, timedelta
@@ -20,6 +21,7 @@ import pandas as pd
 import numpy as np
 from pathlib import Path
 import sys
+import secrets
 
 # Add project to path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -39,13 +41,56 @@ app = FastAPI(
 )
 
 # Enable CORS for frontend
+# Configure allowed origins based on environment
+import os
+
+ALLOWED_ORIGINS = [
+    "http://localhost:8501",  # Streamlit default
+    "http://localhost:3000",  # Common React dev port
+]
+
+# Add production origins from environment
+if os.getenv("PRODUCTION_ORIGIN"):
+    ALLOWED_ORIGINS.append(os.getenv("PRODUCTION_ORIGIN"))
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, specify exact origins
+    allow_origins=ALLOWED_ORIGINS,  # Whitelist only
     allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_methods=["GET", "POST"],  # Restrict methods
+    allow_headers=["Content-Type", "Authorization"],  # Restrict headers
 )
+
+# API Authentication
+security = HTTPBearer()
+API_KEY = os.getenv("DASHBOARD_API_KEY")
+
+# Warn if API key not configured
+if not API_KEY:
+    import logging
+    logging.warning("⚠️  DASHBOARD_API_KEY not set - API authentication is DISABLED!")
+    logging.warning("⚠️  Set environment variable to enable security: export DASHBOARD_API_KEY=your-secret-key")
+
+def verify_api_key(credentials: HTTPAuthorizationCredentials = Depends(security)) -> str:
+    """Verify API key from Authorization header."""
+    if not API_KEY:
+        # Allow unauthenticated access if API key not configured (development only)
+        return "unauthenticated"
+
+    if not secrets.compare_digest(credentials.credentials, API_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid API key",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return credentials.credentials
+
+# Optional: Dependency for endpoints (can be disabled in development)
+def get_api_auth():
+    """Get API authentication dependency based on configuration."""
+    if API_KEY:
+        return Depends(verify_api_key)
+    return None
 
 # Pydantic models for API responses
 class BetSummary(BaseModel):
@@ -186,7 +231,8 @@ def root():
 
 @app.get("/api/summary", response_model=BetSummary)
 def get_summary(
-    days: Optional[int] = Query(None, description="Filter by last N days")
+    days: Optional[int] = Query(None, ge=1, le=365, description="Filter by last N days (1-365)"),
+    _auth: str = Depends(verify_api_key) if API_KEY else None
 ):
     """Get betting summary statistics."""
     try:
@@ -248,7 +294,8 @@ def get_summary(
 
 @app.get("/api/performance", response_model=PerformanceMetrics)
 def get_performance(
-    days: Optional[int] = Query(None, description="Filter by last N days")
+    days: Optional[int] = Query(None, ge=1, le=365, description="Filter by last N days (1-365)"),
+    _auth: str = Depends(verify_api_key) if API_KEY else None
 ):
     """Get detailed performance metrics."""
     try:
@@ -266,10 +313,11 @@ def get_performance(
 
 @app.get("/api/bets", response_model=List[BetRecord])
 def get_bets(
-    limit: int = Query(100, description="Maximum number of bets to return"),
-    offset: int = Query(0, description="Number of bets to skip"),
-    bet_type: Optional[str] = Query(None, description="Filter by bet type"),
-    outcome: Optional[str] = Query(None, description="Filter by outcome")
+    limit: int = Query(100, ge=1, le=1000, description="Maximum number of bets (1-1000)"),
+    offset: int = Query(0, ge=0, description="Number of bets to skip"),
+    bet_type: Optional[str] = Query(None, regex="^(spread|totals|moneyline)$", description="Filter by bet type"),
+    outcome: Optional[str] = Query(None, regex="^(win|loss|push|pending)$", description="Filter by outcome"),
+    _auth: str = Depends(verify_api_key) if API_KEY else None
 ):
     """Get all bets with optional filtering."""
     try:
@@ -317,13 +365,17 @@ def get_bets(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/bets/recent", response_model=List[BetRecord])
-def get_recent_bets(count: int = Query(10, description="Number of recent bets")):
+def get_recent_bets(
+    count: int = Query(10, ge=1, le=100, description="Number of recent bets (1-100)"),
+    _auth: str = Depends(verify_api_key) if API_KEY else None
+):
     """Get most recent bets."""
     return get_bets(limit=count, offset=0)
 
 @app.get("/api/clv", response_model=CLVAnalysis)
 def get_clv(
-    days: Optional[int] = Query(None, description="Filter by last N days")
+    days: Optional[int] = Query(None, ge=1, le=365, description="Filter by last N days (1-365)"),
+    _auth: str = Depends(verify_api_key) if API_KEY else None
 ):
     """Get CLV analysis."""
     try:
@@ -381,7 +433,7 @@ def get_clv(
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/live", response_model=LiveUpdate)
-def get_live_update():
+def get_live_update(_auth: str = Depends(verify_api_key) if API_KEY else None):
     """Get real-time live update."""
     try:
         df = get_bet_history()
@@ -423,7 +475,8 @@ def get_live_update():
 
 @app.get("/api/stats/daily")
 def get_daily_stats(
-    days: int = Query(30, description="Number of days to return")
+    days: int = Query(30, ge=1, le=365, description="Number of days to return (1-365)"),
+    _auth: str = Depends(verify_api_key) if API_KEY else None
 ):
     """Get daily aggregated statistics."""
     try:

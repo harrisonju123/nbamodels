@@ -524,12 +524,13 @@ st.markdown("### 📈 Performance Overview")
 create_performance_summary_cards(df_bets)
 
 # Create tabs for different analytics sections
-tab1, tab2, tab3, tab4, tab5 = st.tabs([
+tab1, tab2, tab3, tab4, tab5, tab_live = st.tabs([
     "📊 Performance Analytics",
     "💰 CLV Analysis",
     "🎯 Model Performance",
     "📅 Time-based Analytics",
-    "🎲 Today's Picks"
+    "🎲 Today's Picks",
+    "🔴 Live Betting"
 ])
 
 with tab1:
@@ -896,6 +897,185 @@ with tab5:
         import traceback
         with st.expander("Show error details"):
             st.code(traceback.format_exc())
+
+with tab_live:
+    st.header("🔴 Live Betting Opportunities")
+
+    # Import live betting modules
+    from src.data.live_betting_db import DB_PATH as LIVE_DB_PATH, get_stats as get_live_stats
+    import sqlite3
+
+    # Check if monitor is running
+    st.info("💡 Start the live monitor with: `python -m scripts.live_game_monitor`")
+
+    # Get live games
+    try:
+        conn = sqlite3.connect(LIVE_DB_PATH)
+
+        # Get most recent game states (last 5 minutes)
+        cutoff = (datetime.now() - timedelta(minutes=5)).isoformat()
+        live_games_query = """
+            SELECT
+                game_id,
+                home_team,
+                away_team,
+                home_score,
+                away_score,
+                quarter,
+                time_remaining,
+                game_status,
+                MAX(timestamp) as last_update
+            FROM live_game_state
+            WHERE timestamp >= ?
+            GROUP BY game_id
+            ORDER BY last_update DESC
+        """
+
+        live_games_df = pd.read_sql_query(live_games_query, conn, params=[cutoff])
+
+        if live_games_df.empty:
+            st.warning("⏰ No live games currently. Games haven't started or monitor isn't running.")
+        else:
+            st.success(f"📡 Monitoring {len(live_games_df)} live games")
+
+            # Display each live game
+            for _, game in live_games_df.iterrows():
+                with st.expander(f"**{game['away_team']} @ {game['home_team']}** - Q{game['quarter']} {game['time_remaining']}", expanded=True):
+                    col1, col2, col3 = st.columns([2, 2, 3])
+
+                    with col1:
+                        st.metric("Score", f"{game['away_score']} - {game['home_score']}")
+                        st.caption(f"Status: {game['game_status']}")
+
+                    with col2:
+                        st.metric("Quarter", f"Q{game['quarter']}")
+                        st.caption(f"Time: {game['time_remaining']}")
+
+                    with col3:
+                        # Get latest alerts for this game
+                        alerts_query = """
+                            SELECT *
+                            FROM live_edge_alerts
+                            WHERE game_id = ?
+                            AND dismissed = 0
+                            ORDER BY timestamp DESC
+                            LIMIT 3
+                        """
+                        alerts = pd.read_sql_query(alerts_query, conn, params=[game['game_id']])
+
+                        if not alerts.empty:
+                            st.markdown("**🎯 Active Alerts:**")
+                            for _, alert in alerts.iterrows():
+                                confidence_color = {
+                                    'HIGH': '🟢',
+                                    'MEDIUM': '🟡',
+                                    'LOW': '🟠'
+                                }.get(alert['confidence'], '⚪')
+
+                                st.markdown(
+                                    f"{confidence_color} **{alert['alert_type'].upper()} {alert['bet_side'].upper()}** "
+                                    f"(Edge: {alert['edge']*100:.1f}%)"
+                                )
+                                st.caption(
+                                    f"Model: {alert['model_prob']*100:.1f}% | "
+                                    f"Market: {alert['market_prob']*100:.1f}% | "
+                                    f"Odds: {alert['odds']:+d}"
+                                )
+                        else:
+                            st.caption("No active alerts")
+
+        # Recent alerts section
+        st.markdown("---")
+        st.subheader("📋 Recent Alerts (Last 24 Hours)")
+
+        recent_cutoff = (datetime.now() - timedelta(hours=24)).isoformat()
+        recent_alerts_query = """
+            SELECT
+                timestamp,
+                home_team || ' vs ' || away_team as game,
+                alert_type,
+                bet_side,
+                ROUND(edge * 100, 1) as edge_pct,
+                confidence,
+                quarter,
+                home_score || '-' || away_score as score,
+                acted_on
+            FROM live_edge_alerts
+            WHERE timestamp >= ?
+            ORDER BY timestamp DESC
+            LIMIT 50
+        """
+
+        recent_alerts = pd.read_sql_query(recent_alerts_query, conn, params=[recent_cutoff])
+
+        if not recent_alerts.empty:
+            # Format timestamp
+            recent_alerts['timestamp'] = pd.to_datetime(recent_alerts['timestamp']).dt.strftime('%I:%M %p')
+
+            # Display as table
+            st.dataframe(
+                recent_alerts,
+                column_config={
+                    "timestamp": "Time",
+                    "game": "Game",
+                    "alert_type": "Type",
+                    "bet_side": "Side",
+                    "edge_pct": st.column_config.NumberColumn("Edge %", format="%.1f%%"),
+                    "confidence": "Confidence",
+                    "quarter": "Q",
+                    "score": "Score",
+                    "acted_on": st.column_config.CheckboxColumn("Acted")
+                },
+                hide_index=True,
+                use_container_width=True
+            )
+        else:
+            st.info("No alerts in the last 24 hours")
+
+        # Database statistics
+        st.markdown("---")
+        st.subheader("📊 Collection Statistics")
+
+        stats = get_live_stats()
+
+        col1, col2, col3, col4 = st.columns(4)
+
+        with col1:
+            st.metric("Game States", f"{stats.get('live_game_state', 0):,}")
+
+        with col2:
+            st.metric("Odds Snapshots", f"{stats.get('live_odds_snapshot', 0):,}")
+
+        with col3:
+            st.metric("Total Alerts", f"{stats.get('live_edge_alerts', 0):,}")
+
+        with col4:
+            st.metric("Paper Bets", f"{stats.get('live_paper_bets', 0):,}")
+
+        if stats.get('date_range'):
+            st.caption(f"Data range: {stats['date_range']['start']} to {stats['date_range']['end']}")
+
+        # Performance metrics (if we have paper bets)
+        if stats.get('settled_bets', 0) > 0:
+            st.markdown("---")
+            st.subheader("📈 Paper Trading Performance")
+
+            col1, col2, col3 = st.columns(3)
+
+            with col1:
+                st.metric("Win Rate", f"{stats.get('win_rate', 0):.1%}")
+
+            with col2:
+                st.metric("Total Profit", f"${stats.get('total_profit', 0):.2f}")
+
+            with col3:
+                st.metric("ROI", f"{stats.get('roi', 0):.1%}")
+
+        conn.close()
+
+    except Exception as e:
+        st.error(f"Error loading live betting data: {e}")
+        st.info("Make sure the live betting database exists. Run the monitor first.")
 
 # Footer
 st.markdown("---")

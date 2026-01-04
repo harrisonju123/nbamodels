@@ -112,6 +112,19 @@ def get_todays_games() -> pd.DataFrame:
         odds_client = OddsAPIClient()
         feature_builder = GameFeatureBuilder()
 
+        # Initialize alternative data feature builders
+        from src.features.referee_features import RefereeFeatureBuilder
+        from src.features.confirmed_lineup_features import ConfirmedLineupFeatureBuilder
+        from src.features.news_features import NewsFeatureBuilder
+        from src.features.sentiment_features import SentimentFeatureBuilder
+
+        referee_builder = RefereeFeatureBuilder()
+        lineup_builder = ConfirmedLineupFeatureBuilder()
+        news_builder = NewsFeatureBuilder()
+        sentiment_builder = SentimentFeatureBuilder()
+
+        logger.info("Initialized alternative data feature builders")
+
         # Get recent games for feature building
         logger.info("Fetching recent games for feature generation...")
         end_date = datetime.now()
@@ -179,6 +192,40 @@ def get_todays_games() -> pd.DataFrame:
                 if col not in ["team", "game_id", "date", "season", "opponent"]:
                     record[f"away_{col}"] = away_stats[col].values[0]
 
+            # Add alternative data features
+            try:
+                # Referee features (by game_id if available, otherwise neutral)
+                ref_features = referee_builder.get_game_features(game["game_id"])
+                record.update(ref_features)
+
+                # Lineup features (by teams and game_id)
+                lineup_features = lineup_builder.get_game_features(
+                    home_team=home_team,
+                    away_team=away_team,
+                    game_id=game.get("game_id")
+                )
+                record.update(lineup_features)
+
+                # News features (by teams)
+                news_features = news_builder.get_game_features(
+                    home_team=home_team,
+                    away_team=away_team
+                )
+                record.update(news_features)
+
+                # Sentiment features (by teams) - stubbed until APIs configured
+                sentiment_features = sentiment_builder.get_game_features(
+                    home_team=home_team,
+                    away_team=away_team
+                )
+                record.update(sentiment_features)
+
+                logger.debug(f"Added alternative data features for {away_team} @ {home_team}")
+
+            except Exception as e:
+                logger.warning(f"Failed to add alternative data features for {away_team} @ {home_team}: {e}")
+                # Continue without alternative data features
+
             records.append(record)
 
         features_df = pd.DataFrame(records)
@@ -186,6 +233,8 @@ def get_todays_games() -> pd.DataFrame:
         if features_df.empty:
             logger.warning("Could not build features for any games")
             return _get_games_with_placeholder_predictions()
+
+        logger.info(f"Built features for {len(features_df)} games (including alternative data)")
 
         # Add differential features
         features_df = _add_differentials(features_df)

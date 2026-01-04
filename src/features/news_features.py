@@ -3,6 +3,8 @@ News Feature Builder
 
 Generates features from NBA news article volume and recency.
 Tracks news attention for each team to detect potential market inefficiencies.
+
+Optimized with batch queries and caching to avoid N+1 query problems.
 """
 
 from datetime import datetime, timedelta
@@ -25,6 +27,10 @@ class NewsFeatureBuilder:
     - home_news_recency: Hours since last article about home team
     - away_news_recency: Hours since last article about away team
     - news_volume_diff: Home - Away volume difference
+
+    Optimized with:
+    - Batch queries to avoid N+1 problem
+    - 1-hour caching for news data
     """
 
     def __init__(self, db_path: str = None):
@@ -35,9 +41,108 @@ class NewsFeatureBuilder:
             db_path: Path to database (defaults to BETS_DB_PATH)
         """
         self.client = NBANewsClient(db_path=db_path or BETS_DB_PATH)
-        self._cache = {}
+
+        # Caching for all team news (1-hour TTL)
+        self._volume_cache = {}
+        self._recency_cache = {}
         self._cache_time = None
-        self._cache_duration = timedelta(hours=1)
+        self._cache_ttl = timedelta(hours=1)
+
+    def _get_all_team_news(self, lookback_hours: int = 24) -> Dict[str, Dict]:
+        """
+        Get news volume and recency for all teams with caching.
+
+        Loads all team news data once and caches for 1 hour.
+        Avoids N+1 queries when processing multiple games.
+
+        Args:
+            lookback_hours: Hours to look back for news volume
+
+        Returns:
+            Dictionary mapping team abbreviation to news data
+        """
+        now = datetime.now()
+
+        # Check cache validity
+        if self._cache_time and (now - self._cache_time) < self._cache_ttl:
+            logger.debug(f"Using cached news data (age: {(now - self._cache_time).seconds}s)")
+            return self._volume_cache
+
+        # Refresh cache - batch query all team news
+        logger.debug(f"Refreshing news cache (lookback: {lookback_hours}h)")
+
+        try:
+            # Get connection from client
+            conn = self.client._get_connection()
+
+            # Calculate cutoff time for lookback
+            cutoff = datetime.now() - timedelta(hours=lookback_hours)
+            cutoff_str = cutoff.isoformat()
+
+            # Single query to get volume for all teams
+            volume_cursor = conn.execute("""
+                SELECT
+                    ne.team_abbrev,
+                    COUNT(DISTINCT na.id) as article_count
+                FROM news_entities ne
+                JOIN news_articles na ON ne.article_id = na.id
+                WHERE na.published_at >= ?
+                  AND ne.team_abbrev IS NOT NULL
+                GROUP BY ne.team_abbrev
+            """, (cutoff_str,))
+
+            volume_cache = {}
+            for row in volume_cursor.fetchall():
+                team = row['team_abbrev']
+                volume_cache[team] = {
+                    'volume': row['article_count'],
+                    'recency': None,  # Will be filled next
+                }
+
+            # Single query to get recency for all teams
+            recency_cursor = conn.execute("""
+                SELECT
+                    ne.team_abbrev,
+                    MAX(na.published_at) as latest_article
+                FROM news_entities ne
+                JOIN news_articles na ON ne.article_id = na.id
+                WHERE ne.team_abbrev IS NOT NULL
+                GROUP BY ne.team_abbrev
+            """)
+
+            for row in recency_cursor.fetchall():
+                team = row['team_abbrev']
+                latest = row['latest_article']
+
+                if latest:
+                    try:
+                        latest_dt = datetime.fromisoformat(latest)
+                        hours_since = (datetime.now() - latest_dt).total_seconds() / 3600
+                    except (ValueError, TypeError):
+                        hours_since = 999.0
+                else:
+                    hours_since = 999.0
+
+                # Update cache with recency
+                if team in volume_cache:
+                    volume_cache[team]['recency'] = hours_since
+                else:
+                    volume_cache[team] = {
+                        'volume': 0,
+                        'recency': hours_since,
+                    }
+
+            conn.close()
+
+            self._volume_cache = volume_cache
+            self._cache_time = now
+
+            logger.debug(f"Cached news data for {len(volume_cache)} teams")
+            return volume_cache
+
+        except Exception as e:
+            logger.error(f"Failed to load news data: {e}")
+            return {}
 
     def get_game_features(
         self,
@@ -56,19 +161,17 @@ class NewsFeatureBuilder:
         Returns:
             Dictionary of news features
         """
-        # Get news volume for each team
-        home_volume = self.client.get_team_news_volume(home_team, hours=lookback_hours)
-        away_volume = self.client.get_team_news_volume(away_team, hours=lookback_hours)
+        # Get all team news (cached)
+        all_news = self._get_all_team_news(lookback_hours)
 
-        # Get recency (hours since last article)
-        home_recency = self.client.get_team_news_recency(home_team)
-        away_recency = self.client.get_team_news_recency(away_team)
+        # Get data for home and away teams
+        home_data = all_news.get(home_team, {'volume': 0, 'recency': 999.0})
+        away_data = all_news.get(away_team, {'volume': 0, 'recency': 999.0})
 
-        # Handle None values (no articles found)
-        if home_recency is None:
-            home_recency = 999.0  # Large number = no recent news
-        if away_recency is None:
-            away_recency = 999.0
+        home_volume = home_data['volume']
+        away_volume = away_data['volume']
+        home_recency = home_data['recency'] if home_data['recency'] is not None else 999.0
+        away_recency = away_data['recency'] if away_data['recency'] is not None else 999.0
 
         return {
             "home_news_volume_24h": home_volume,
@@ -88,6 +191,8 @@ class NewsFeatureBuilder:
         """
         Generate news features for multiple games.
 
+        Optimized with batch queries to avoid N+1 problem.
+
         Args:
             games_df: DataFrame with game information
             home_team_col: Column name for home team
@@ -97,15 +202,35 @@ class NewsFeatureBuilder:
         Returns:
             DataFrame with news features added
         """
+        if games_df.empty:
+            return games_df
+
+        # Pre-load all team news data (single set of queries, cached)
+        all_news = self._get_all_team_news(lookback_hours)
+
+        # Build features for each game using cached data
         features_list = []
 
         for _, game in games_df.iterrows():
-            features = self.get_game_features(
-                home_team=game[home_team_col],
-                away_team=game[away_team_col],
-                lookback_hours=lookback_hours
-            )
-            features_list.append(features)
+            home_team = game[home_team_col]
+            away_team = game[away_team_col]
+
+            # Get data from cache
+            home_data = all_news.get(home_team, {'volume': 0, 'recency': 999.0})
+            away_data = all_news.get(away_team, {'volume': 0, 'recency': 999.0})
+
+            home_volume = home_data['volume']
+            away_volume = away_data['volume']
+            home_recency = home_data['recency'] if home_data['recency'] is not None else 999.0
+            away_recency = away_data['recency'] if away_data['recency'] is not None else 999.0
+
+            features_list.append({
+                "home_news_volume_24h": home_volume,
+                "away_news_volume_24h": away_volume,
+                "home_news_recency": round(home_recency, 1),
+                "away_news_recency": round(away_recency, 1),
+                "news_volume_diff": home_volume - away_volume,
+            })
 
         features_df = pd.DataFrame(features_list)
         return pd.concat([games_df.reset_index(drop=True), features_df], axis=1)
@@ -121,14 +246,19 @@ class NewsFeatureBuilder:
         Returns:
             Dictionary with team news summary
         """
-        volume = self.client.get_team_news_volume(team_abbrev, hours=hours)
-        recency = self.client.get_team_news_recency(team_abbrev)
+        # Get all team news (cached)
+        all_news = self._get_all_team_news(hours)
+
+        team_data = all_news.get(team_abbrev, {'volume': 0, 'recency': 999.0})
+
+        volume = team_data['volume']
+        recency = team_data['recency'] if team_data['recency'] is not None else 999.0
 
         return {
             "team": team_abbrev,
             "volume_24h": volume,
-            "hours_since_last": recency if recency is not None else 999.0,
-            "has_recent_news": recency is not None and recency < 2.0,  # Within 2 hours
+            "hours_since_last": recency,
+            "has_recent_news": recency < 2.0,  # Within 2 hours
         }
 
 
@@ -151,4 +281,18 @@ if __name__ == "__main__":
     for k, v in summary.items():
         print(f"  {k}: {v}")
 
+    # Test batch operation
     print("\n" + "=" * 60)
+    print("Testing batch operation (multiple games)...")
+
+    test_games = pd.DataFrame({
+        "home_team": ["LAL", "GSW", "BOS"],
+        "away_team": ["BOS", "LAC", "PHI"],
+    })
+
+    result = builder.get_features_for_games(test_games)
+    print(f"\nProcessed {len(result)} games in single batch query")
+    print(result[["home_team", "away_team", "home_news_volume_24h", "away_news_volume_24h", "news_volume_diff"]])
+
+    print("\n" + "=" * 60)
+    print("News features based on RSS feed scraping")

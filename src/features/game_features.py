@@ -32,6 +32,28 @@ except ImportError:
     HAS_MATCHUP_FEATURES = False
     MatchupFeatureBuilder = None
 
+# Optional imports for alternative data features
+try:
+    from .referee_features import RefereeFeatureBuilder
+    HAS_REFEREE_FEATURES = True
+except ImportError:
+    HAS_REFEREE_FEATURES = False
+    RefereeFeatureBuilder = None
+
+try:
+    from .news_features import NewsFeatureBuilder
+    HAS_NEWS_FEATURES = True
+except ImportError:
+    HAS_NEWS_FEATURES = False
+    NewsFeatureBuilder = None
+
+try:
+    from .sentiment_features import SentimentFeatureBuilder
+    HAS_SENTIMENT_FEATURES = True
+except ImportError:
+    HAS_SENTIMENT_FEATURES = False
+    SentimentFeatureBuilder = None
+
 
 class GameFeatureBuilder:
     """Builds game-level features for prediction."""
@@ -45,6 +67,9 @@ class GameFeatureBuilder:
         use_elo: bool = True,
         use_lineup_features: bool = None,  # Auto-detect if None
         use_matchup_features: bool = True,
+        use_referee_features: bool = True,  # NEW: Alternative data
+        use_news_features: bool = True,     # NEW: Alternative data
+        use_sentiment_features: bool = True,  # NEW: Alternative data
         player_impact_path: Optional[str] = None,
     ):
         self.team_builder = team_builder or TeamFeatureBuilder()
@@ -87,6 +112,42 @@ class GameFeatureBuilder:
             except Exception as e:
                 logger.warning(f"Could not initialize matchup features: {e}")
                 self.use_matchup_features = False
+
+        # Initialize referee feature builder (Alternative Data)
+        self.use_referee_features = use_referee_features and HAS_REFEREE_FEATURES
+        self.referee_builder = None
+
+        if self.use_referee_features:
+            try:
+                self.referee_builder = RefereeFeatureBuilder()
+                logger.info("Referee feature builder initialized")
+            except Exception as e:
+                logger.warning(f"Could not initialize referee features: {e}")
+                self.use_referee_features = False
+
+        # Initialize news feature builder (Alternative Data)
+        self.use_news_features = use_news_features and HAS_NEWS_FEATURES
+        self.news_builder = None
+
+        if self.use_news_features:
+            try:
+                self.news_builder = NewsFeatureBuilder()
+                logger.info("News feature builder initialized")
+            except Exception as e:
+                logger.warning(f"Could not initialize news features: {e}")
+                self.use_news_features = False
+
+        # Initialize sentiment feature builder (Alternative Data)
+        self.use_sentiment_features = use_sentiment_features and HAS_SENTIMENT_FEATURES
+        self.sentiment_builder = None
+
+        if self.use_sentiment_features:
+            try:
+                self.sentiment_builder = SentimentFeatureBuilder()
+                logger.info("Sentiment feature builder initialized")
+            except Exception as e:
+                logger.warning(f"Could not initialize sentiment features: {e}")
+                self.use_sentiment_features = False
 
     def build_game_features(
         self,
@@ -156,6 +217,16 @@ class GameFeatureBuilder:
         # Add Elo features
         if self.use_elo:
             game_features = self._add_elo_features(game_features, games_df)
+
+        # Add alternative data features
+        if self.use_referee_features and self.referee_builder is not None:
+            game_features = self._add_referee_features(game_features, games_df)
+
+        if self.use_news_features and self.news_builder is not None:
+            game_features = self._add_news_features(game_features, games_df)
+
+        if self.use_sentiment_features and self.sentiment_builder is not None:
+            game_features = self._add_sentiment_features(game_features, games_df)
 
         # Add schedule features (B2B, rest)
         game_features = self._add_schedule_features(game_features, games_df)
@@ -494,6 +565,83 @@ class GameFeatureBuilder:
         ordered_cols = [c for c in ordered_cols if c in df.columns]
 
         return df[ordered_cols]
+
+    def _add_referee_features(self, game_features: pd.DataFrame, games_df: pd.DataFrame) -> pd.DataFrame:
+        """Add referee features to game data."""
+        try:
+            ref_features = self.referee_builder.get_features_for_games(
+                games_df, game_id_col='game_id'
+            )
+            ref_cols = [c for c in ref_features.columns if c.startswith('ref_')]
+
+            if not ref_cols:
+                logger.warning("No referee features generated")
+                return game_features
+
+            game_features = game_features.merge(
+                ref_features[['game_id'] + ref_cols],
+                on='game_id',
+                how='left'
+            )
+
+            # Fill NaNs with neutral values
+            for col in ref_cols:
+                if 'pace_factor' in col:
+                    game_features[col] = game_features[col].fillna(1.0)
+                elif 'bias' in col or 'rate' in col:
+                    game_features[col] = game_features[col].fillna(0.5)
+                else:
+                    game_features[col] = game_features[col].fillna(0.0)
+
+            logger.info(f"Added {len(ref_cols)} referee features")
+            return game_features
+        except Exception as e:
+            logger.error(f"Failed to add referee features: {e}")
+            return game_features
+
+    def _add_news_features(self, game_features: pd.DataFrame, games_df: pd.DataFrame) -> pd.DataFrame:
+        """Add news features to game data."""
+        try:
+            news_features = self.news_builder.get_features_for_games(
+                games_df, home_team_col='home_team', away_team_col='away_team'
+            )
+            news_cols = [c for c in news_features.columns if 'news' in c]
+
+            if not news_cols:
+                logger.warning("No news features generated")
+                return game_features
+
+            # News features don't have game_id, so we concat by index
+            for col in news_cols:
+                game_features[col] = news_features[col].fillna(0.0)
+
+            logger.info(f"Added {len(news_cols)} news features")
+            return game_features
+        except Exception as e:
+            logger.error(f"Failed to add news features: {e}")
+            return game_features
+
+    def _add_sentiment_features(self, game_features: pd.DataFrame, games_df: pd.DataFrame) -> pd.DataFrame:
+        """Add sentiment features to game data."""
+        try:
+            sentiment_features = self.sentiment_builder.get_features_for_games(
+                games_df, home_team_col='home_team', away_team_col='away_team'
+            )
+            sentiment_cols = [c for c in sentiment_features.columns if 'sentiment' in c]
+
+            if not sentiment_cols:
+                logger.warning("No sentiment features generated")
+                return game_features
+
+            # Sentiment features don't have game_id, so we concat by index
+            for col in sentiment_cols:
+                game_features[col] = sentiment_features[col].fillna(0.0)
+
+            logger.info(f"Added {len(sentiment_cols)} sentiment features")
+            return game_features
+        except Exception as e:
+            logger.error(f"Failed to add sentiment features: {e}")
+            return game_features
 
     def get_feature_columns(self, df: pd.DataFrame) -> list:
         """Get list of feature columns for modeling."""

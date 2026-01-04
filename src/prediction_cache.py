@@ -233,6 +233,27 @@ def _convert_signals_to_predictions(signals: List, games_df: pd.DataFrame, all_o
         # Get odds for this game
         game_odds = all_odds[all_odds['game_id'] == signal.game_id] if not all_odds.empty else pd.DataFrame()
 
+        # Get odds for this bet
+        odds_value = game_row.get('home_odds', -110) if signal.bet_side == 'HOME' else game_row.get('away_odds', -110)
+
+        # Calculate Kelly criterion
+        # Convert American odds to decimal probability
+        if odds_value < 0:
+            implied_prob = abs(odds_value) / (abs(odds_value) + 100)
+        else:
+            implied_prob = 100 / (odds_value + 100)
+
+        # Our edge is the model edge vs market spread
+        edge_points = abs(game_row.get('model_edge', 0))
+
+        # Estimate win probability from edge (rough approximation: each point = ~2% edge)
+        our_win_prob = 0.5 + (edge_points * 0.02)
+        our_win_prob = max(0.0, min(1.0, our_win_prob))  # Clamp to [0, 1]
+
+        # Kelly = (bp - q) / b where b = decimal odds - 1, p = our prob, q = 1 - p
+        decimal_odds = (100 / abs(odds_value)) if odds_value < 0 else (odds_value / 100)
+        kelly = max(0.0, (decimal_odds * our_win_prob - (1 - our_win_prob)) / decimal_odds)
+
         pred = {
             'game_id': signal.game_id,
             'commence_time': game_row.get('commence_time'),
@@ -242,9 +263,9 @@ def _convert_signals_to_predictions(signals: List, games_df: pd.DataFrame, all_o
             'bet_home': signal.bet_side == 'HOME',
             'bet_away': signal.bet_side == 'AWAY',
             'line': game_row.get('market_spread', 0),
-            'odds': game_row.get('home_odds', -110) if signal.bet_side == 'HOME' else game_row.get('away_odds', -110),
-            'edge_vs_market': abs(game_row.get('model_edge', 0)),
-            'kelly': 0.0,  # Calculate Kelly if needed
+            'odds': odds_value,
+            'edge_vs_market': edge_points,
+            'kelly': kelly,
             'confidence': signal.confidence,
             'model_edge': game_row.get('model_edge', 0),
             'pred_diff': game_row.get('pred_diff', 0),

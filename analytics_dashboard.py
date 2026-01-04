@@ -770,8 +770,10 @@ with tab5:
                         bet_team = row['home_team'] if is_betting_home else row['away_team']
                         bet_side = 'home' if is_betting_home else 'away'
                         line = row.get('line', row.get('spread_home', 0)) if is_betting_home else -row.get('line', -row.get('spread_home', 0))
-                        edge = row.get('edge_vs_market', row.get('home_edge', 0)) if is_betting_home else row.get('away_edge', 0)
-                        kelly = row.get('kelly', row.get('home_kelly', 0)) if is_betting_home else row.get('away_kelly', 0)
+
+                        # edge_vs_market and kelly already represent the bet side (from prediction cache)
+                        edge = row.get('edge_vs_market', row.get('home_edge', 0) if is_betting_home else row.get('away_edge', 0))
+                        kelly = row.get('kelly', row.get('home_kelly', 0) if is_betting_home else row.get('away_kelly', 0))
 
                         with st.expander(f"**{row['away_team']} @ {row['home_team']}**", expanded=True):
                             col1, col2, col3 = st.columns(3)

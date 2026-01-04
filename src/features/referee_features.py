@@ -121,12 +121,27 @@ class RefereeFeatureBuilder:
         Get referee assignments for multiple games in batch.
 
         Args:
-            game_ids: List of game IDs
+            game_ids: List of game IDs (NBA format: 10-digit numeric strings)
 
         Returns:
             DataFrame with assignments for all games
         """
         if not game_ids:
+            return pd.DataFrame()
+
+        # Validate game_ids to prevent SQL injection
+        # NBA game IDs are 10-digit numeric strings (e.g., "0022100001")
+        import re
+
+        def _validate_game_id(game_id: str) -> bool:
+            """Validate game_id format (NBA format: 10 digits)."""
+            if not isinstance(game_id, str):
+                return False
+            # Accept 10-digit format (standard) or alphanumeric up to 20 chars (flexible)
+            return bool(re.match(r'^[\w-]{1,20}$', game_id))
+
+        if not all(_validate_game_id(gid) for gid in game_ids):
+            logger.error("Invalid game_id format in batch query - must be alphanumeric/dash/underscore, max 20 chars")
             return pd.DataFrame()
 
         try:

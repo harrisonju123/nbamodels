@@ -275,12 +275,18 @@ class DualModelATSBacktester:
             # Determine if bet covered
             point_diff = row.get("point_diff", 0)  # Home - Away
 
+            # Spread coverage logic:
+            # market_spread is from home team perspective
+            # Home covers if: point_diff + market_spread > 0
+            # Away covers if: point_diff + market_spread < 0
+            spread_result = point_diff + market_spread
+
             if bet_side == "HOME":
-                # Home covers if point_diff > -spread (spread is negative when home favored)
-                covered = point_diff > -market_spread
+                # Home covers if spread_result > 0
+                covered = spread_result > 0
             else:
-                # Away covers if point_diff < -spread
-                covered = point_diff < -market_spread
+                # Away covers if spread_result < 0
+                covered = spread_result < 0
 
             # Calculate P&L (standard -110 odds)
             if covered:

@@ -205,7 +205,11 @@ class ESPNLineupClient:
                     })
 
         df = pd.DataFrame(records)
-        logger.info(f"Found {len(df)} player records ({len(df[df['is_starter']==1])} starters)")
+        if not df.empty:
+            starter_count = len(df[df['is_starter']==1])
+            logger.info(f"Found {len(df)} player records ({starter_count} starters)")
+        else:
+            logger.info("No lineup data available yet (normal if lineups not yet posted)")
         return df
 
     def get_game_lineup(self, game_id: str) -> Dict[str, List[str]]:

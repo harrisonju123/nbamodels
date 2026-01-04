@@ -4,10 +4,14 @@ Paper Trading Performance Dashboard
 Shows current performance metrics for the paper trading system.
 """
 
+import sys
+sys.path.insert(0, '.')
+
 import sqlite3
 from datetime import datetime, timedelta
 from loguru import logger
 import pandas as pd
+from src.bankroll.bankroll_manager import BankrollManager
 
 
 DB_PATH = "data/bets/bets.db"
@@ -79,7 +83,7 @@ def get_recent_performance(days=30):
 
     cutoff = (datetime.now() - timedelta(days=days)).isoformat()
 
-    query = f"""
+    query = """
     SELECT
         DATE(logged_at) as date,
         COUNT(*) as bets,
@@ -87,13 +91,13 @@ def get_recent_performance(days=30):
         ROUND(SUM(COALESCE(profit, 0)), 2) as daily_profit,
         ROUND(SUM(SUM(COALESCE(profit, 0))) OVER (ORDER BY DATE(logged_at)), 2) as cumulative_profit
     FROM bets
-    WHERE outcome IS NOT NULL AND logged_at >= '{cutoff}'
+    WHERE outcome IS NOT NULL AND logged_at >= ?
     GROUP BY DATE(logged_at)
     ORDER BY date DESC
     LIMIT 15
     """
 
-    df = pd.read_sql_query(query, conn)
+    df = pd.read_sql_query(query, conn, params=[cutoff])
     conn.close()
 
     return df
@@ -132,6 +136,20 @@ def print_dashboard():
     print("📊 PAPER TRADING PERFORMANCE DASHBOARD")
     print("=" * 80)
     print(f"Generated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n")
+
+    # Bankroll Summary
+    bankroll_mgr = BankrollManager()
+    bankroll_stats = bankroll_mgr.get_bankroll_stats()
+
+    print("💰 BANKROLL STATUS")
+    print("-" * 80)
+    print(f"Current Bankroll: ${bankroll_stats['current']:,.2f}")
+    print(f"Starting Amount:  ${bankroll_stats['starting']:,.2f}")
+    print(f"Peak Bankroll:    ${bankroll_stats['peak']:,.2f}")
+    print(f"Total Profit:     ${bankroll_stats['total_profit']:+,.2f}")
+    print(f"Bankroll ROI:     {bankroll_stats['roi']:.2f}%")
+    print(f"Max Drawdown:     {bankroll_stats['max_drawdown']:.2%}")
+    print()
 
     # Overall Summary
     summary = get_performance_summary()

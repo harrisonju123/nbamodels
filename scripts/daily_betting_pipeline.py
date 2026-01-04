@@ -38,6 +38,7 @@ from src.betting.edge_strategy import EdgeStrategy, BetSignal
 from src.betting.optimized_strategy import OptimizedBettingStrategy, OptimizedStrategyConfig
 from src.betting.line_shopping import LineShoppingEngine
 from src.bet_tracker import log_bet
+from src.bankroll.bankroll_manager import BankrollManager
 
 
 # Paper trading flag (global)
@@ -63,22 +64,50 @@ def get_todays_games() -> pd.DataFrame:
     """
     logger.info("Generating predictions for today's NBA games...")
 
+    # Import dependencies
     try:
         import pickle
+        from pathlib import Path
         from src.data import NBAStatsClient
         from src.features import GameFeatureBuilder
         from datetime import datetime, timedelta
+    except ImportError as e:
+        logger.error(f"Failed to import required modules: {e}")
+        return _get_games_with_placeholder_predictions()
 
-        # Load trained model
+    # Load trained model with comprehensive error handling
+    try:
         logger.info("Loading trained spread model...")
-        with open("models/spread_model.pkl", "rb") as f:
+        model_path = Path("models/spread_model.pkl")
+
+        if not model_path.exists():
+            logger.error(f"Model file not found: {model_path}")
+            return _get_games_with_placeholder_predictions()
+
+        with open(model_path, "rb") as f:
             model_data = pickle.load(f)
+
+        # Validate loaded data structure
+        if not isinstance(model_data, dict):
+            raise ValueError(f"Invalid model file structure - expected dict, got {type(model_data)}")
+        if 'model' not in model_data:
+            raise ValueError("Model file missing 'model' key")
+        if 'feature_columns' not in model_data:
+            raise ValueError("Model file missing 'feature_columns' key")
 
         model = model_data["model"]
         feature_cols = model_data["feature_columns"]
         logger.info(f"Loaded model with {len(feature_cols)} features")
 
-        # Initialize data clients
+    except (FileNotFoundError, ValueError, pickle.UnpicklingError) as e:
+        logger.error(f"Model loading failed: {e}")
+        return _get_games_with_placeholder_predictions()
+    except Exception as e:
+        logger.error(f"Unexpected error loading model: {e}")
+        return _get_games_with_placeholder_predictions()
+
+    # Initialize data clients (after successful model load)
+    try:
         stats_client = NBAStatsClient()
         odds_client = OddsAPIClient()
         feature_builder = GameFeatureBuilder()
@@ -726,9 +755,20 @@ def main():
     if actionable and not args.dry_run:
         logger.info("\n8️⃣  Logging bets to database...")
 
+        # Get current bankroll (dynamic, grows with profit)
+        bankroll_mgr = BankrollManager()
+        current_bankroll = bankroll_mgr.get_current_bankroll()
+
+        # Initialize if needed
+        if current_bankroll == 0:
+            logger.info("   ⚠️  Bankroll not initialized - starting with $1000")
+            bankroll_mgr.initialize_bankroll(1000.0)
+            current_bankroll = 1000.0
+
         # Initialize optimized strategy for bet sizing
         sizing_strategy = OptimizedBettingStrategy(OptimizedStrategyConfig())
-        bankroll = 1000.0  # Paper trading starting bankroll
+
+        logger.info(f"   💰 Current bankroll: ${current_bankroll:,.2f}")
 
         for signal in actionable:
             game = games_df[games_df['game_id'] == signal.game_id].iloc[0]
@@ -738,7 +778,7 @@ def main():
                 all_odds_df=all_odds_df,
                 paper_mode=PAPER_TRADING,
                 dry_run=args.dry_run,
-                bankroll=bankroll,
+                bankroll=current_bankroll,
                 strategy=sizing_strategy
             )
 

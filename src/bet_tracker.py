@@ -476,15 +476,29 @@ def settle_bet(
             outcome = "win" if point_diff < 0 else "loss"
 
     elif bet["bet_type"] == "spread":
-        # Home covers if point_diff + spread > 0
+        # Spread coverage logic:
+        # spread is from home team perspective
+        # Home covers if: point_diff + spread > 0
+        # Away covers if: point_diff + spread < 0
+        # Push if: point_diff + spread == 0 (within tolerance)
+
         spread = bet["line"]
-        margin = point_diff + spread
-        if margin > 0:
-            outcome = "win"
-        elif margin < 0:
-            outcome = "loss"
-        else:
+        spread_result = point_diff + spread
+
+        # Check for push first (within 0.1 point tolerance)
+        if abs(spread_result) < 0.1:
             outcome = "push"
+        elif bet["bet_side"] == "home":
+            # Home covers if spread_result > 0
+            outcome = "win" if spread_result > 0 else "loss"
+        elif bet["bet_side"] == "away":
+            # Away covers if spread_result < 0
+            outcome = "win" if spread_result < 0 else "loss"
+        else:
+            # Invalid bet_side - this is a critical error
+            logger.error(f"Invalid bet_side for spread bet: {bet['bet_side']} (bet_id: {bet_id})")
+            conn.close()
+            raise ValueError(f"Invalid bet_side '{bet['bet_side']}' for spread bet {bet_id}. Must be 'home' or 'away'.")
 
     elif bet["bet_type"] == "totals":
         line = bet["line"]
@@ -495,15 +509,23 @@ def settle_bet(
                 outcome = "loss"
             else:
                 outcome = "push"
-        else:  # under
+        elif bet["bet_side"] == "under":
             if total_points < line:
                 outcome = "win"
             elif total_points > line:
                 outcome = "loss"
             else:
                 outcome = "push"
+        else:
+            # Invalid bet_side for totals
+            logger.error(f"Invalid bet_side for totals bet: {bet['bet_side']} (bet_id: {bet_id})")
+            conn.close()
+            raise ValueError(f"Invalid bet_side '{bet['bet_side']}' for totals bet {bet_id}. Must be 'over' or 'under'.")
     else:
-        outcome = None
+        # Unknown bet_type
+        logger.error(f"Unknown bet_type: {bet['bet_type']} (bet_id: {bet_id})")
+        conn.close()
+        raise ValueError(f"Unknown bet_type '{bet['bet_type']}' for bet {bet_id}. Must be 'spread' or 'totals'.")
 
     # Calculate profit using actual bet amount (default $100 if not set)
     wager = bet.get("bet_amount") or 100.0
@@ -521,53 +543,187 @@ def settle_bet(
 
     settled_at = datetime.now().isoformat()
 
-    conn.execute("""
-        UPDATE bets SET
-            outcome = ?,
-            actual_score_home = ?,
-            actual_score_away = ?,
-            profit = ?,
-            settled_at = ?
-        WHERE id = ?
-    """, (outcome, home_score, away_score, profit, settled_at, bet_id))
+    try:
+        conn.execute("""
+            UPDATE bets SET
+                outcome = ?,
+                actual_score_home = ?,
+                actual_score_away = ?,
+                profit = ?,
+                settled_at = ?
+            WHERE id = ?
+        """, (outcome, home_score, away_score, profit, settled_at, bet_id))
 
-    conn.commit()
+        conn.commit()
 
-    result = conn.execute("SELECT * FROM bets WHERE id = ?", (bet_id,)).fetchone()
-    conn.close()
+        result = conn.execute("SELECT * FROM bets WHERE id = ?", (bet_id,)).fetchone()
+    except Exception as e:
+        logger.error(f"Failed to settle bet {bet_id}: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
     logger.info(f"Settled bet: {bet_id} -> {outcome} (${profit:+.2f})")
     return dict(result)
 
 
+def _calculate_bet_outcome(bet: Dict, home_score: int, away_score: int) -> tuple:
+    """
+    Calculate bet outcome without database access (for batch processing).
+
+    Args:
+        bet: Bet dictionary with bet_type, bet_side, line, odds, bet_amount
+        home_score: Final home team score
+        away_score: Final away team score
+
+    Returns:
+        Tuple of (outcome, profit)
+    """
+    point_diff = home_score - away_score
+    total_points = home_score + away_score
+
+    # Determine outcome based on bet type
+    if bet["bet_type"] == "moneyline":
+        if bet["bet_side"] == "home":
+            outcome = "win" if point_diff > 0 else "loss"
+        else:  # away
+            outcome = "win" if point_diff < 0 else "loss"
+
+    elif bet["bet_type"] == "spread":
+        spread = bet["line"]
+        spread_result = point_diff + spread
+
+        # Check for push (within 0.1 point tolerance)
+        if abs(spread_result) < 0.1:
+            outcome = "push"
+        elif bet["bet_side"] == "home":
+            outcome = "win" if spread_result > 0 else "loss"
+        elif bet["bet_side"] == "away":
+            outcome = "win" if spread_result < 0 else "loss"
+        else:
+            raise ValueError(f"Invalid bet_side '{bet['bet_side']}' for spread bet")
+
+    elif bet["bet_type"] == "totals":
+        line = bet["line"]
+        if bet["bet_side"] == "over":
+            if total_points > line:
+                outcome = "win"
+            elif total_points < line:
+                outcome = "loss"
+            else:
+                outcome = "push"
+        elif bet["bet_side"] == "under":
+            if total_points < line:
+                outcome = "win"
+            elif total_points > line:
+                outcome = "loss"
+            else:
+                outcome = "push"
+        else:
+            raise ValueError(f"Invalid bet_side '{bet['bet_side']}' for totals bet")
+    else:
+        raise ValueError(f"Unknown bet_type '{bet['bet_type']}'")
+
+    # Calculate profit
+    wager = bet.get("bet_amount") or 100.0
+
+    if outcome == "win":
+        odds = bet["odds"]
+        if odds > 0:
+            profit = wager * (odds / 100)
+        else:
+            profit = wager * (100 / abs(odds))
+    elif outcome == "loss":
+        profit = -wager
+    else:  # push
+        profit = 0
+
+    return outcome, profit
+
+
 def settle_all_pending(games_df: pd.DataFrame) -> int:
     """
-    Settle all pending bets using game results.
+    Settle all pending bets using game results (optimized batch version).
 
     games_df should have columns: game_id, home_score, away_score
 
     Returns count of bets settled.
     """
     conn = _get_connection()
-    pending = conn.execute(
-        "SELECT id, game_id FROM bets WHERE outcome IS NULL"
-    ).fetchall()
-    conn.close()
 
-    count = 0
-    for bet in pending:
-        game = games_df[games_df["game_id"] == bet["game_id"]]
-        if game.empty:
-            continue
+    try:
+        # Get all pending bets (single query)
+        pending = conn.execute(
+            "SELECT * FROM bets WHERE outcome IS NULL"
+        ).fetchall()
 
-        row = game.iloc[0]
-        if pd.isna(row.get("home_score")) or pd.isna(row.get("away_score")):
-            continue
+        if not pending:
+            conn.close()
+            return 0
 
-        settle_bet(bet["id"], int(row["home_score"]), int(row["away_score"]))
-        count += 1
+        # Prepare batch updates
+        updates = []
+        settled_at = datetime.now().isoformat()
 
-    return count
+        for bet in pending:
+            bet_dict = dict(bet)
+            game_id = bet_dict["game_id"]
+
+            # Find corresponding game
+            game = games_df[games_df["game_id"] == game_id]
+            if game.empty:
+                continue
+
+            row = game.iloc[0]
+            if pd.isna(row.get("home_score")) or pd.isna(row.get("away_score")):
+                continue
+
+            home_score = int(row["home_score"])
+            away_score = int(row["away_score"])
+
+            # Calculate outcome
+            try:
+                outcome, profit = _calculate_bet_outcome(bet_dict, home_score, away_score)
+
+                updates.append((
+                    outcome,
+                    home_score,
+                    away_score,
+                    profit,
+                    settled_at,
+                    bet_dict["id"]
+                ))
+
+                logger.debug(f"Prepared settlement: {bet_dict['id']} -> {outcome} (${profit:+.2f})")
+
+            except ValueError as e:
+                logger.error(f"Error calculating outcome for bet {bet_dict['id']}: {e}")
+                continue
+
+        # Batch update (single query)
+        if updates:
+            conn.executemany("""
+                UPDATE bets SET
+                    outcome = ?,
+                    actual_score_home = ?,
+                    actual_score_away = ?,
+                    profit = ?,
+                    settled_at = ?
+                WHERE id = ?
+            """, updates)
+
+            conn.commit()
+            logger.info(f"Settled {len(updates)} bets in batch")
+
+        return len(updates)
+
+    except Exception as e:
+        logger.error(f"Error in batch settlement: {e}")
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def _american_to_decimal(odds: float) -> float:
@@ -1290,8 +1446,13 @@ def get_performance_decay_metrics(recent_window: int = 50, historical_window: in
         recent_val = recent_metrics[key]
         if abs(hist_val) > 1e-10:  # Use threshold instead of exact zero check
             changes[f'{key}_change'] = (recent_val - hist_val) / abs(hist_val)
+        elif abs(recent_val) < 1e-10:
+            # Both zero, no change
+            changes[f'{key}_change'] = 0.0
         else:
-            changes[f'{key}_change'] = 0 if abs(recent_val) < 1e-10 else float('inf')
+            # Historical zero but recent non-zero - cap at 1000% change
+            changes[f'{key}_change'] = 10.0 if recent_val > 0 else -10.0
+            logger.warning(f"Capping {key}_change at ±1000% due to zero historical value")
 
     # Determine if there's decay
     decay_indicators = 0
@@ -1851,7 +2012,30 @@ def american_to_implied_prob(odds: float) -> float:
     Note:
         This includes the bookmaker's vig (overround). For true probabilities,
         use no-vig probabilities from the odds API when available.
+
+    Raises:
+        ValueError: If odds are invalid (not numeric, NaN, inf, or out of range)
     """
+    import numpy as np
+
+    # Validate numeric type
+    if not isinstance(odds, (int, float)):
+        raise ValueError(f"Odds must be a number, got {type(odds)}")
+
+    # Check for NaN or inf
+    if np.isnan(odds) or np.isinf(odds):
+        raise ValueError(f"Odds cannot be NaN or infinite, got {odds}")
+
+    # Validate odds value
+    if odds == 0:
+        raise ValueError("Odds cannot be 0 (use -100 for even money)")
+    if odds == -100:
+        raise ValueError("Odds of -100 are invalid (would be even money at 1.00 decimal)")
+
+    # Validate reasonable range (typical sports betting range)
+    if not (-10000 <= odds <= 10000):
+        raise ValueError(f"Odds out of reasonable range [-10000, +10000]: {odds}")
+
     if odds > 0:
         return 100 / (odds + 100)
     else:

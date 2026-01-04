@@ -163,13 +163,22 @@ class RefereeDataClient:
             "DayOffset": "0"
         })
 
+        # Validate API response
         if not data:
             logger.warning(f"No scoreboard data for {game_date}")
+            return pd.DataFrame()
+
+        if not isinstance(data, dict):
+            logger.error(f"Invalid API response type: {type(data)}")
             return pd.DataFrame()
 
         # Parse game headers and officials
         records = []
         result_sets = data.get("resultSets", [])
+
+        if not result_sets:
+            logger.warning(f"No resultSets in API response for {game_date}")
+            return pd.DataFrame()
 
         # Find GameHeader and Officials result sets
         game_headers = None
@@ -191,10 +200,21 @@ class RefereeDataClient:
 
         for row in rows:
             row_dict = dict(zip(headers, row))
+
+            # Build referee name from FIRST_NAME and LAST_NAME
+            first_name = row_dict.get("FIRST_NAME", "")
+            last_name = row_dict.get("LAST_NAME", "")
+            ref_name = f"{first_name} {last_name}".strip()
+
+            # Fallback to OFFICIAL_ID if name not available
+            if not ref_name:
+                ref_name = str(row_dict.get("OFFICIAL_ID", "Unknown"))
+
             records.append({
                 "game_id": row_dict.get("GAME_ID"),
                 "game_date": game_date,
-                "ref_name": row_dict.get("OFFICIAL_ID"),  # Name might be in FIRST_NAME/LAST_NAME
+                "ref_name": ref_name,
+                "ref_id": row_dict.get("OFFICIAL_ID"),
                 "ref_role": None,  # Will need to determine from position
                 "collected_at": datetime.now().isoformat(),
             })
@@ -220,13 +240,30 @@ class RefereeDataClient:
         try:
             records = []
             for _, row in assignments_df.iterrows():
+                # Handle both snake_case and UPPERCASE column names
+                game_id = row.get("game_id") or row.get("GAME_ID")
+                game_date = row.get("game_date") or row.get("GAME_DATE")
+                ref_name = row.get("ref_name") or row.get("REF_NAME")
+
+                # Validate required fields
+                if not game_id:
+                    logger.error(f"Missing game_id in row: {row.to_dict()}")
+                    continue
+                if not ref_name:
+                    logger.error(f"Missing ref_name in row: {row.to_dict()}")
+                    continue
+
                 records.append((
-                    row["game_id"],
-                    row["game_date"],
-                    row["ref_name"],
-                    row.get("ref_role"),
-                    row["collected_at"],
+                    game_id,
+                    game_date,
+                    ref_name,
+                    row.get("ref_role") or row.get("REF_ROLE"),
+                    row.get("collected_at") or row.get("COLLECTED_AT") or datetime.now().isoformat(),
                 ))
+
+            if not records:
+                logger.warning("No valid records to save after validation")
+                return 0
 
             conn.executemany("""
                 INSERT OR REPLACE INTO referee_assignments

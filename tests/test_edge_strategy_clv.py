@@ -369,7 +369,7 @@ class TestNewStrategyPresets:
 
         assert strategy.edge_threshold == 5.0
         assert strategy.require_no_b2b is True
-        assert strategy.use_team_filter is True
+        # Note: use_team_filter attribute removed - no longer part of strategy
         assert strategy.clv_filter_enabled is True
         assert strategy.min_historical_clv == 0.01
 

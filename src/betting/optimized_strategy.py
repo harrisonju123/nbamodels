@@ -184,14 +184,18 @@ class OptimizedBettingStrategy:
         Returns:
             Bet size in dollars
         """
-        # Apply home bias adjustment
+        # Note: Home bias penalty already applied in should_bet()
+        # So we use edge as-is here
         adjusted_edge = edge
-        if side and side.lower() == 'home':
-            adjusted_edge -= self.config.home_bias_penalty
 
         # Kelly formula: (edge * odds - 1) / (odds - 1)
-        b = odds - 1  # Net odds
+        b = odds - 1  # Net odds (profit multiplier)
         kelly = (adjusted_edge * odds - (1 - adjusted_edge)) / b
+
+        # Check for negative Kelly (indicates no edge after all adjustments)
+        if kelly < 0:
+            logger.warning(f"Negative Kelly ({kelly:.3f}) for edge={adjusted_edge:.3f}, odds={odds:.3f}")
+            return 0.0  # Don't bet
 
         # Apply Kelly fraction
         kelly_fraction = self.config.kelly_fraction

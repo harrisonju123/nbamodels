@@ -9,6 +9,7 @@ Optimized with batch queries and caching to avoid N+1 query problems.
 
 from datetime import datetime, timedelta
 from typing import Dict
+import threading
 
 import pandas as pd
 from loguru import logger
@@ -31,6 +32,7 @@ class NewsFeatureBuilder:
     Optimized with:
     - Batch queries to avoid N+1 problem
     - 1-hour caching for news data
+    - Thread-safe cache refresh
     """
 
     def __init__(self, db_path: str = None):
@@ -47,13 +49,15 @@ class NewsFeatureBuilder:
         self._recency_cache = {}
         self._cache_time = None
         self._cache_ttl = timedelta(hours=1)
+        self._cache_lock = threading.Lock()
 
     def _get_all_team_news(self, lookback_hours: int = 24) -> Dict[str, Dict]:
         """
-        Get news volume and recency for all teams with caching.
+        Get news volume and recency for all teams with caching (thread-safe).
 
         Loads all team news data once and caches for 1 hour.
         Avoids N+1 queries when processing multiple games.
+        Uses double-checked locking to prevent race conditions.
 
         Args:
             lookback_hours: Hours to look back for news volume
@@ -63,86 +67,102 @@ class NewsFeatureBuilder:
         """
         now = datetime.now()
 
-        # Check cache validity
+        # First check (without lock) - fast path
         if self._cache_time and (now - self._cache_time) < self._cache_ttl:
             logger.debug(f"Using cached news data (age: {(now - self._cache_time).seconds}s)")
             return self._volume_cache
 
-        # Refresh cache - batch query all team news
-        logger.debug(f"Refreshing news cache (lookback: {lookback_hours}h)")
+        # Acquire lock for cache refresh
+        with self._cache_lock:
+            # Double-check inside lock (another thread may have refreshed)
+            if self._cache_time and (now - self._cache_time) < self._cache_ttl:
+                return self._volume_cache
 
-        try:
-            # Get connection from client
-            conn = self.client._get_connection()
+            # Refresh cache - batch query all team news (inside lock)
+            logger.debug(f"Refreshing news cache (lookback: {lookback_hours}h)")
 
-            # Calculate cutoff time for lookback
-            cutoff = datetime.now() - timedelta(hours=lookback_hours)
-            cutoff_str = cutoff.isoformat()
+            try:
+                # Get connection from client
+                conn = self.client._get_connection()
 
-            # Single query to get volume for all teams
-            volume_cursor = conn.execute("""
-                SELECT
-                    ne.team_abbrev,
-                    COUNT(DISTINCT na.id) as article_count
-                FROM news_entities ne
-                JOIN news_articles na ON ne.article_id = na.id
-                WHERE na.published_at >= ?
-                  AND ne.team_abbrev IS NOT NULL
-                GROUP BY ne.team_abbrev
-            """, (cutoff_str,))
+                # Calculate cutoff time for lookback
+                cutoff = datetime.now() - timedelta(hours=lookback_hours)
+                cutoff_str = cutoff.isoformat()
 
-            volume_cache = {}
-            for row in volume_cursor.fetchall():
-                team = row['team_abbrev']
-                volume_cache[team] = {
-                    'volume': row['article_count'],
-                    'recency': None,  # Will be filled next
-                }
+                # Single query to get volume for all teams
+                volume_cursor = conn.execute("""
+                    SELECT
+                        ne.team_abbrev,
+                        COUNT(DISTINCT na.id) as article_count
+                    FROM news_entities ne
+                    JOIN news_articles na ON ne.article_id = na.id
+                    WHERE na.published_at >= ?
+                      AND ne.team_abbrev IS NOT NULL
+                    GROUP BY ne.team_abbrev
+                """, (cutoff_str,))
 
-            # Single query to get recency for all teams
-            recency_cursor = conn.execute("""
-                SELECT
-                    ne.team_abbrev,
-                    MAX(na.published_at) as latest_article
-                FROM news_entities ne
-                JOIN news_articles na ON ne.article_id = na.id
-                WHERE ne.team_abbrev IS NOT NULL
-                GROUP BY ne.team_abbrev
-            """)
-
-            for row in recency_cursor.fetchall():
-                team = row['team_abbrev']
-                latest = row['latest_article']
-
-                if latest:
-                    try:
-                        latest_dt = datetime.fromisoformat(latest)
-                        hours_since = (datetime.now() - latest_dt).total_seconds() / 3600
-                    except (ValueError, TypeError):
-                        hours_since = 999.0
-                else:
-                    hours_since = 999.0
-
-                # Update cache with recency
-                if team in volume_cache:
-                    volume_cache[team]['recency'] = hours_since
-                else:
+                volume_cache = {}
+                for row in volume_cursor.fetchall():
+                    team = row['team_abbrev']
                     volume_cache[team] = {
-                        'volume': 0,
-                        'recency': hours_since,
+                        'volume': row['article_count'],
+                        'recency': None,  # Will be filled next
                     }
 
-            conn.close()
+                # Single query to get recency for all teams
+                recency_cursor = conn.execute("""
+                    SELECT
+                        ne.team_abbrev,
+                        MAX(na.published_at) as latest_article
+                    FROM news_entities ne
+                    JOIN news_articles na ON ne.article_id = na.id
+                    WHERE ne.team_abbrev IS NOT NULL
+                    GROUP BY ne.team_abbrev
+                """)
 
-            self._volume_cache = volume_cache
-            self._cache_time = now
+                for row in recency_cursor.fetchall():
+                    team = row['team_abbrev']
+                    latest = row['latest_article']
 
-            logger.debug(f"Cached news data for {len(volume_cache)} teams")
-            return volume_cache
+                    if latest:
+                        try:
+                            from datetime import timezone
+                            latest_dt = datetime.fromisoformat(latest)
 
-        except Exception as e:
-            logger.error(f"Failed to load news data: {e}")
-            return {}
+                            # Ensure both datetimes are timezone-aware or both naive
+                            if latest_dt.tzinfo:
+                                now = datetime.now(timezone.utc)
+                            else:
+                                now = datetime.now()
+
+                            hours_since = (now - latest_dt).total_seconds() / 3600
+                        except (ValueError, TypeError) as e:
+                            logger.debug(f"Could not parse latest_article datetime: {latest} - {e}")
+                            hours_since = 999.0
+                    else:
+                        hours_since = 999.0
+
+                    # Update cache with recency
+                    if team in volume_cache:
+                        volume_cache[team]['recency'] = hours_since
+                    else:
+                        volume_cache[team] = {
+                            'volume': 0,
+                            'recency': hours_since,
+                        }
+
+                conn.close()
+
+                # Update cache (still inside lock)
+                self._volume_cache = volume_cache
+                self._cache_time = now
+
+                logger.debug(f"Cached news data for {len(volume_cache)} teams")
+                return volume_cache
+
+            except Exception as e:
+                logger.error(f"Failed to load news data: {e}")
+                return {}
 
     def get_game_features(
         self,

@@ -39,13 +39,16 @@ cp .env.example .env
 # 1. Get today's bet recommendations (with automatic line shopping)
 python scripts/daily_betting_pipeline.py
 
-# 2. View performance dashboard
+# 2. View performance dashboard (includes bankroll tracking)
 python scripts/paper_trading_dashboard.py
 
-# 3. Line shopping value report (optional)
+# 3. Settle finished bets and update bankroll
+python scripts/settle_bets.py
+
+# 4. Line shopping value report (optional)
 python scripts/line_shopping_report.py
 
-# 4. Monitor closing line value (optional)
+# 5. Monitor closing line value (optional)
 python scripts/generate_clv_report.py
 ```
 
@@ -70,10 +73,18 @@ python scripts/generate_clv_report.py
 ### Optimized Betting Strategy
 - **Minimum edge**: 5% (7% for home bets)
 - **Kelly fraction**: 10% for bankroll management
+- **Dynamic bankroll**: Bet sizing grows with profits, compounds over time
 - **Home bias penalty**: -2% edge adjustment
 - **CLV filtering**: Historical closing line value threshold
-- **Drawdown protection**: 30% stop loss
+- **Drawdown protection**: 30% stop loss tracking
 - **Line shopping**: Automatic best odds across 6+ bookmakers
+
+### Bankroll Management
+- **Dynamic tracking**: Bankroll adjusts automatically with bet outcomes
+- **Compounding growth**: Bet sizing scales with current bankroll
+- **Performance metrics**: Peak, drawdown, ROI tracking
+- **Automatic settlement**: Bets settled and bankroll updated via API
+- **Historical sync**: Can backfill bankroll from existing bet history
 
 ## 📁 Project Structure
 
@@ -87,10 +98,12 @@ nbamodels/
 │   ├── models/                 # ML model implementations
 │   ├── features/               # Feature engineering
 │   ├── betting/                # Betting strategies
+│   ├── bankroll/               # Bankroll management
 │   └── data/                   # Data collection clients
 ├── scripts/
 │   ├── daily_betting_pipeline.py      # Main pipeline
 │   ├── paper_trading_dashboard.py     # Performance dashboard
+│   ├── settle_bets.py                 # Bet settlement & bankroll updates
 │   ├── retrain_models.py              # Model retraining
 │   └── collect_*.py                   # Data collection scripts
 ├── models/                     # Trained model files

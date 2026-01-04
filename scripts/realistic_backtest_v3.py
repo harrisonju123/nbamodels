@@ -182,13 +182,17 @@ for idx, row in test_data.iterrows():
         if xgb_prob >= CONFIDENCE_THRESHOLD:
             # Bet home to cover - line moves against us
             adjusted_spread = spread - LINE_MOVEMENT
-            home_covers = actual_diff > -adjusted_spread
+            # Spread coverage: home covers if actual_diff + adjusted_spread > 0
+            spread_result = actual_diff + adjusted_spread
+            home_covers = spread_result > 0
             bet_side = 'home'
             won = home_covers
         elif xgb_prob <= (1 - CONFIDENCE_THRESHOLD):
             # Bet away to cover - line moves against us
             adjusted_spread = spread + LINE_MOVEMENT
-            away_covers = actual_diff < -adjusted_spread
+            # Spread coverage: away covers if actual_diff + adjusted_spread < 0
+            spread_result = actual_diff + adjusted_spread
+            away_covers = spread_result < 0
             bet_side = 'away'
             won = away_covers
         else:

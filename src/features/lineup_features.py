@@ -8,6 +8,7 @@ game-level features based on expected player availability.
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass
 from pathlib import Path
+from datetime import datetime, timedelta
 
 import numpy as np
 import pandas as pd
@@ -249,20 +250,28 @@ class LineupFeatureBuilder:
             home_injured = []
             away_injured = []
 
-            if injury_df is not None and game_id in injury_df['game_id'].values:
-                game_injuries = injury_df[injury_df['game_id'] == game_id]
+            if injury_df is not None and not injury_df.empty:
+                # Validate required columns exist
+                required_cols = ['game_id', 'team_id', 'player_id', 'is_out']
+                missing_cols = [col for col in required_cols if col not in injury_df.columns]
 
-                home_inj = game_injuries[
-                    (game_injuries['team_id'] == home_team_id) &
-                    (game_injuries['is_out'] == True)
-                ]
-                away_inj = game_injuries[
-                    (game_injuries['team_id'] == away_team_id) &
-                    (game_injuries['is_out'] == True)
-                ]
+                if missing_cols:
+                    logger.warning(f"Injury DataFrame missing required columns: {missing_cols}")
+                elif game_id in injury_df['game_id'].values:
+                    game_injuries = injury_df[injury_df['game_id'] == game_id]
 
-                home_injured = home_inj['player_id'].tolist()
-                away_injured = away_inj['player_id'].tolist()
+                    # Use .fillna() to handle NaN values in comparisons
+                    home_inj = game_injuries[
+                        (game_injuries['team_id'].fillna(-1) == home_team_id) &
+                        (game_injuries['is_out'].fillna(False) == True)
+                    ]
+                    away_inj = game_injuries[
+                        (game_injuries['team_id'].fillna(-1) == away_team_id) &
+                        (game_injuries['is_out'].fillna(False) == True)
+                    ]
+
+                    home_injured = home_inj['player_id'].dropna().tolist()
+                    away_injured = away_inj['player_id'].dropna().tolist()
 
             # Build features
             features = self.build_game_features(
@@ -311,14 +320,19 @@ class LineupChemistryTracker:
 
     Lineups that have logged more minutes together may perform
     better than expected based on individual impacts.
+
+    Memory-managed to prevent unbounded growth.
     """
 
-    def __init__(self, cache_dir: str = "data/cache/lineup_chemistry"):
+    def __init__(self, cache_dir: str = "data/cache/lineup_chemistry", max_pairs: int = 50000):
         self.cache_dir = Path(cache_dir)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
 
         # (player_a, player_b) -> minutes together
         self._pair_minutes: Dict[Tuple[int, int], float] = {}
+        self.max_pairs = max_pairs
+        self._last_cleanup = datetime.now()
+        self._cleanup_interval = timedelta(days=7)  # Weekly cleanup
 
     def add_stint(
         self,
@@ -337,6 +351,31 @@ class LineupChemistryTracker:
             for p2 in player_ids[i+1:]:
                 pair = tuple(sorted([p1, p2]))
                 self._pair_minutes[pair] = self._pair_minutes.get(pair, 0) + minutes
+
+        # Periodic cleanup to prevent memory leak
+        if len(self._pair_minutes) > self.max_pairs:
+            self._cleanup_inactive_pairs()
+
+    def _cleanup_inactive_pairs(self):
+        """Remove pairs with minimal shared minutes to prevent memory leak."""
+        from loguru import logger
+
+        logger.info(f"Cleaning up chemistry tracker ({len(self._pair_minutes)} pairs)")
+
+        # Keep only pairs with significant shared time (>= 5 minutes)
+        threshold = 5.0
+        self._pair_minutes = {
+            pair: mins for pair, mins in self._pair_minutes.items()
+            if mins >= threshold
+        }
+
+        # If still too large, keep only top pairs by minutes
+        if len(self._pair_minutes) > self.max_pairs:
+            sorted_pairs = sorted(self._pair_minutes.items(), key=lambda x: x[1], reverse=True)
+            self._pair_minutes = dict(sorted_pairs[:self.max_pairs])
+
+        self._last_cleanup = datetime.now()
+        logger.info(f"Cleaned up to {len(self._pair_minutes)} pairs")
 
     def get_chemistry_score(
         self,

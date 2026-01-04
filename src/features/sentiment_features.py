@@ -7,6 +7,7 @@ Uses Reddit's HTML scraping (no authentication required).
 
 from typing import Dict
 from datetime import datetime, timedelta
+import threading
 import pandas as pd
 from loguru import logger
 
@@ -27,20 +28,21 @@ class SentimentFeatureBuilder:
     """
 
     def __init__(self):
-        """Initialize sentiment feature builder with caching (fixes Issue #15)."""
+        """Initialize sentiment feature builder with thread-safe caching."""
         self.scraper = PublicSentimentScraper()
         self.enabled = True  # Always enabled - uses free public data
 
-        # Cache for batch operations
+        # Cache for batch operations (thread-safe)
         self._cache = {}
         self._cache_time = None
         self._cache_ttl = timedelta(minutes=15)  # Match cron schedule
+        self._cache_lock = threading.Lock()
 
         logger.debug("Sentiment feature builder initialized with free public scraping")
 
     def _get_cached_sentiments(self, date: str) -> Dict[str, Dict]:
         """
-        Get all team sentiments with caching (fixes Issue #15).
+        Get all team sentiments with thread-safe caching.
 
         Args:
             date: Date in YYYY-MM-DD format
@@ -50,38 +52,45 @@ class SentimentFeatureBuilder:
         """
         now = datetime.now()
 
-        # Check cache validity
+        # First check (without lock) - fast path
         if self._cache_time and (now - self._cache_time) < self._cache_ttl:
             logger.debug(f"Using cached sentiment data (age: {(now - self._cache_time).seconds}s)")
             return self._cache
 
-        # Refresh cache - batch query all teams at once
-        logger.debug(f"Refreshing sentiment cache for {date}")
+        # Acquire lock for cache refresh
+        with self._cache_lock:
+            # Double-check inside lock (another thread may have refreshed)
+            if self._cache_time and (now - self._cache_time) < self._cache_ttl:
+                return self._cache
 
-        conn = self.scraper._get_connection()
-        try:
-            cursor = conn.execute("""
-                SELECT team_abbrev, sentiment_score, total_mentions
-                FROM sentiment_scores
-                WHERE date = ?
-            """, (date,))
+            # Refresh cache - batch query all teams at once (inside lock)
+            logger.debug(f"Refreshing sentiment cache for {date}")
 
-            cache = {}
-            for row in cursor.fetchall():
-                cache[row['team_abbrev']] = {
-                    'sentiment': row['sentiment_score'],
-                    'volume': row['total_mentions'],
-                    'enabled': True
-                }
+            conn = self.scraper._get_connection()
+            try:
+                cursor = conn.execute("""
+                    SELECT team_abbrev, sentiment_score, total_mentions
+                    FROM sentiment_scores
+                    WHERE date = ?
+                """, (date,))
 
-            self._cache = cache
-            self._cache_time = now
+                cache = {}
+                for row in cursor.fetchall():
+                    cache[row['team_abbrev']] = {
+                        'sentiment': row['sentiment_score'],
+                        'volume': row['total_mentions'],
+                        'enabled': True
+                    }
 
-            logger.debug(f"Cached sentiment for {len(cache)} teams")
-            return cache
+                # Update cache (still inside lock)
+                self._cache = cache
+                self._cache_time = now
 
-        finally:
-            conn.close()
+                logger.debug(f"Cached sentiment for {len(cache)} teams")
+                return cache
+
+            finally:
+                conn.close()
 
     def get_game_features(
         self,

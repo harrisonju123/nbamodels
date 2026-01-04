@@ -715,7 +715,13 @@ with tab5:
                     st.success("Predictions refreshed!")
                     st.rerun()
 
-        if not predictions or not any(predictions.values()):
+        # Check if predictions dict is empty or has no valid DataFrames
+        has_predictions = bool(predictions and any(
+            df is not None and not df.empty
+            for df in predictions.values()
+        ))
+
+        if not has_predictions:
             st.info("No predictions available. Click Refresh to load today's picks.")
         else:
             # Get regime status
@@ -836,12 +842,19 @@ with tab5:
                 else:
                     st.info("No moneyline picks with edge today")
 
-            # Show message if no predictions
-            if not any([
-                ('ats' in predictions and predictions['ats'] is not None and not predictions['ats'].empty),
-                ('stacking' in predictions and predictions['stacking'] is not None and not predictions['stacking'].empty)
-            ]):
-                st.info("No predictions available. Click Refresh to load today's games.")
+            # Show message if no predictions with bets
+            has_ats_bets = ('ats' in predictions and
+                           predictions['ats'] is not None and
+                           not predictions['ats'].empty and
+                           any(predictions['ats'].get('bet_home', False) | predictions['ats'].get('bet_away', False)))
+
+            has_ml_bets = ('stacking' in predictions and
+                          predictions['stacking'] is not None and
+                          not predictions['stacking'].empty and
+                          any(predictions['stacking'].get('bet_home', False) | predictions['stacking'].get('bet_away', False)))
+
+            if not (has_ats_bets or has_ml_bets):
+                st.info("No predictions with positive edge today. Click Refresh to reload.")
 
     except ImportError as e:
         st.error(f"Prediction modules not found: {e}")

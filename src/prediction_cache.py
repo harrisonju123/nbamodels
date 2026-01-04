@@ -49,8 +49,10 @@ def load_cached_predictions() -> Optional[Dict[str, pd.DataFrame]]:
 
         predictions = {}
         for market, data in cache.get("predictions", {}).items():
-            if data:
-                predictions[market] = pd.DataFrame(data)
+            if data:  # data is a list/dict here, not a DataFrame, so this is safe
+                df = pd.DataFrame(data)
+                if not df.empty:
+                    predictions[market] = df
 
         return predictions
     except Exception as e:

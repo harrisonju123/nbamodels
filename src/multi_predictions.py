@@ -204,7 +204,10 @@ class MultiPredictor:
         )
         if not odds.empty:
             odds = self.odds_client.calculate_no_vig_odds(odds)
-        logger.info(f"Fetched odds for {odds['game_id'].nunique()} upcoming games")
+            num_games = odds['game_id'].nunique() if 'game_id' in odds.columns else len(odds)
+            logger.info(f"Fetched odds for {num_games} upcoming games")
+        else:
+            logger.info("No odds available for upcoming games")
         return odds
 
     def build_features_for_upcoming(

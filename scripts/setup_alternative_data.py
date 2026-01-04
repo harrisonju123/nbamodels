@@ -49,19 +49,19 @@ def check_data_status():
 
     try:
         # Check sentiment data
-        cursor = conn.execute("SELECT COUNT(*) as count, MAX(collected_at) as latest FROM sentiment_scores")
+        cursor = conn.execute("SELECT COUNT(*) as count, MAX(updated_at) as latest FROM sentiment_scores")
         row = cursor.fetchone()
         sentiment_count = row[0] if row else 0
         sentiment_latest = row[1] if row and row[1] else "Never"
 
         # Check news data
-        cursor = conn.execute("SELECT COUNT(*) as count, MAX(collected_at) as latest FROM news_articles")
+        cursor = conn.execute("SELECT COUNT(*) as count, MAX(published_at) as latest FROM news_articles")
         row = cursor.fetchone()
         news_count = row[0] if row else 0
         news_latest = row[1] if row and row[1] else "Never"
 
         # Check referee data
-        cursor = conn.execute("SELECT COUNT(*) as count, MAX(collected_at) as latest FROM referee_assignments")
+        cursor = conn.execute("SELECT COUNT(*) as count, MAX(game_date) as latest FROM referee_assignments")
         row = cursor.fetchone()
         referee_count = row[0] if row else 0
         referee_latest = row[1] if row and row[1] else "Never"

@@ -670,8 +670,19 @@ with tab4:
 
         available_cols = [col for col in display_cols if col in recent_bets.columns]
 
+        # Clean any encoding issues in string columns
+        display_df = recent_bets[available_cols].copy()
+        for col in display_df.select_dtypes(include=['object']).columns:
+            try:
+                # Convert to string and handle any encoding issues
+                display_df[col] = display_df[col].apply(
+                    lambda x: str(x).encode('utf-8', errors='replace').decode('utf-8') if pd.notna(x) else x
+                )
+            except:
+                pass  # Skip columns that can't be converted
+
         st.dataframe(
-            recent_bets[available_cols],
+            display_df,
             use_container_width=True,
             height=400
         )

@@ -181,3 +181,26 @@ MIN_REASONABLE_SPREAD = -30.0  # Minimum reasonable NBA spread
 # Probability bounds
 MAX_PROBABILITY = 0.999  # Maximum probability (avoid log(0))
 MIN_PROBABILITY = 0.001  # Minimum probability (avoid log(0))
+
+# ============================================================================
+# ALTERNATIVE DATA CONSTANTS
+# ============================================================================
+
+# Referee constants
+REF_TOTAL_BIAS_WEIGHT = 0.5  # Weight for referee total bias in predictions
+REF_PACE_FACTOR_DEFAULT = 1.0  # Neutral pace factor
+
+# Lineup constants
+LINEUP_STARTER_COUNT = 5  # Expected number of starters
+LINEUP_UNCERTAINTY_THRESHOLD = 0.4  # High uncertainty if 40%+ starters questionable
+
+# News constants
+NEWS_RECENCY_HOURS = 24  # Default lookback window for news
+NEWS_BREAKING_THRESHOLD_HOURS = 2  # Consider "breaking" if within 2 hours
+NEWS_HIGH_VOLUME_THRESHOLD = 10  # High news volume if 10+ articles
+
+# Sentiment constants (Phase 4)
+SENTIMENT_ENABLED = False  # Toggle when APIs configured
+SENTIMENT_NEUTRAL = 0.0  # Neutral sentiment value
+SENTIMENT_MIN = -1.0  # Most negative sentiment
+SENTIMENT_MAX = 1.0  # Most positive sentiment

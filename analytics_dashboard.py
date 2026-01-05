@@ -187,16 +187,129 @@ with tab2:
         if len(settled) == 0:
             st.info("No settled bets yet. Check back after games complete.")
         else:
-            # Performance metrics
-            st.markdown("#### Key Metrics")
-
-            col1, col2, col3 = st.columns(3)
-
+            # Calculate metrics
             wins = (settled['outcome'] == 'win').sum()
             losses = (settled['outcome'] == 'loss').sum()
             pushes = (settled['outcome'] == 'push').sum()
+            total_profit = settled['profit'].sum()
+            total_wagered = settled['bet_amount'].sum()
+            roi = (total_profit / total_wagered * 100) if total_wagered > 0 else 0
+            win_rate = (wins / (wins + losses) * 100) if (wins + losses) > 0 else 0
+
+            # Calculate advanced metrics
+            settled_sorted = settled.sort_values('logged_at').copy()
+            settled_sorted['cumulative_profit'] = settled_sorted['profit'].fillna(0).cumsum()
+
+            # Sharpe Ratio (annualized)
+            returns = settled_sorted['profit'] / settled_sorted['bet_amount']
+            sharpe = (returns.mean() / returns.std() * np.sqrt(252)) if returns.std() > 0 else 0
+
+            # Max Drawdown
+            cumulative = settled_sorted['cumulative_profit']
+            running_max = cumulative.cummax()
+            drawdown = cumulative - running_max
+            max_drawdown = drawdown.min()
+            max_drawdown_pct = (max_drawdown / running_max.max() * 100) if running_max.max() > 0 else 0
+
+            # Current drawdown
+            current_drawdown = cumulative.iloc[-1] - running_max.iloc[-1]
+            current_drawdown_pct = (current_drawdown / running_max.iloc[-1] * 100) if running_max.iloc[-1] > 0 else 0
+
+            # CLV metrics (if available)
+            has_clv = 'clv' in settled.columns and settled['clv'].notna().any()
+            if has_clv:
+                avg_clv = settled['clv'].mean()
+                clv_positive_pct = (settled['clv'] > 0).sum() / len(settled) * 100
+
+            # ALERTS
+            alerts = []
+            if current_drawdown_pct < -10:
+                alerts.append(("⚠️ Large Drawdown", f"Currently down {abs(current_drawdown_pct):.1f}% from peak"))
+            if len(settled) >= 30 and roi < 5:
+                alerts.append(("⚠️ Low ROI", f"ROI of {roi:.1f}% below backtest expectations"))
+            if len(settled) >= 30 and win_rate < 52:
+                alerts.append(("⚠️ Low Win Rate", f"Win rate of {win_rate:.1f}% below 52% break-even"))
+            if has_clv and avg_clv < -0.01:
+                alerts.append(("⚠️ Negative CLV", f"Average CLV of {avg_clv:.2f} indicates poor bet timing"))
+
+            # Display alerts
+            if alerts:
+                for title, msg in alerts:
+                    st.warning(f"**{title}**: {msg}")
+            else:
+                st.success("✅ All metrics healthy")
+
+            st.markdown("---")
+
+            # Performance vs Backtest
+            st.markdown("#### 📊 Live vs Backtest")
+
+            backtest_roi = 21.0  # From proper backtest
+            backtest_win_rate = 63.4
+
+            col1, col2 = st.columns(2)
 
             with col1:
+                roi_diff = roi - backtest_roi
+                roi_color = "green" if roi_diff >= 0 else "red"
+                st.markdown(f"""
+                **ROI Comparison**
+                - Live: **{roi:.1f}%**
+                - Backtest: {backtest_roi:.1f}%
+                - Difference: <span style='color:{roi_color}'>**{roi_diff:+.1f}%**</span>
+                """, unsafe_allow_html=True)
+
+                if len(settled) < 100:
+                    st.caption(f"⚠️ Small sample ({len(settled)} bets). Need 200+ for statistical significance.")
+
+            with col2:
+                wr_diff = win_rate - backtest_win_rate
+                wr_color = "green" if wr_diff >= 0 else "red"
+                st.markdown(f"""
+                **Win Rate Comparison**
+                - Live: **{win_rate:.1f}%**
+                - Backtest: {backtest_win_rate:.1f}%
+                - Difference: <span style='color:{wr_color}'>**{wr_diff:+.1f}%**</span>
+                """, unsafe_allow_html=True)
+
+            st.markdown("---")
+
+            # Advanced Risk Metrics
+            st.markdown("#### 📈 Risk Metrics")
+
+            col1, col2, col3, col4 = st.columns(4)
+
+            with col1:
+                sharpe_color = "green" if sharpe > 1 else ("orange" if sharpe > 0.5 else "red")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Sharpe Ratio</div>
+                    <div class="metric-value" style="color:{sharpe_color}">{sharpe:.2f}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col2:
+                dd_color = "green" if max_drawdown_pct > -15 else ("orange" if max_drawdown_pct > -25 else "red")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Max Drawdown</div>
+                    <div class="metric-value" style="color:{dd_color}">{max_drawdown_pct:.1f}%</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col3:
+                profit_factor = (settled[settled['profit'] > 0]['profit'].sum() /
+                                abs(settled[settled['profit'] < 0]['profit'].sum())) if (settled['profit'] < 0).any() else float('inf')
+                pf_display = f"{profit_factor:.2f}" if profit_factor != float('inf') else "∞"
+                pf_color = "green" if profit_factor > 1.5 else ("orange" if profit_factor > 1 else "red")
+                st.markdown(f"""
+                <div class="metric-card">
+                    <div class="metric-label">Profit Factor</div>
+                    <div class="metric-value" style="color:{pf_color}">{pf_display}</div>
+                </div>
+                """, unsafe_allow_html=True)
+
+            with col4:
                 st.markdown(f"""
                 <div class="metric-card">
                     <div class="metric-label">Record</div>
@@ -204,31 +317,34 @@ with tab2:
                 </div>
                 """, unsafe_allow_html=True)
 
-            with col2:
-                total_wagered = settled['bet_amount'].sum()
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Total Wagered</div>
-                    <div class="metric-value">${total_wagered:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
+            # CLV Analysis
+            if has_clv:
+                st.markdown("---")
+                st.markdown("#### 💎 Bet Quality (CLV)")
 
-            with col3:
-                avg_bet = settled['bet_amount'].mean()
-                st.markdown(f"""
-                <div class="metric-card">
-                    <div class="metric-label">Avg Bet Size</div>
-                    <div class="metric-value">${avg_bet:,.0f}</div>
-                </div>
-                """, unsafe_allow_html=True)
+                col1, col2, col3 = st.columns(3)
 
-            st.markdown("#### Cumulative Profit")
+                with col1:
+                    clv_color = "green" if avg_clv > 0.01 else ("orange" if avg_clv > -0.01 else "red")
+                    st.metric("Average CLV", f"{avg_clv:.2%}",
+                             help="Closing Line Value - measures bet timing quality")
 
-            # Profit chart
-            settled_sorted = settled.sort_values('logged_at').copy()
-            settled_sorted['cumulative_profit'] = settled_sorted['profit'].fillna(0).cumsum()
+                with col2:
+                    st.metric("Positive CLV %", f"{clv_positive_pct:.1f}%",
+                             help="% of bets that beat the closing line")
 
+                with col3:
+                    max_clv = settled['clv'].max()
+                    st.metric("Best CLV", f"{max_clv:.2%}",
+                             help="Best single bet timing")
+
+            st.markdown("---")
+            st.markdown("#### 💰 Cumulative Profit")
+
+            # Profit chart with drawdown shading
             fig = go.Figure()
+
+            # Add cumulative profit line
             fig.add_trace(go.Scatter(
                 x=settled_sorted['logged_at'],
                 y=settled_sorted['cumulative_profit'],
@@ -239,19 +355,30 @@ with tab2:
                 fillcolor='rgba(102, 126, 234, 0.1)'
             ))
 
+            # Add peak line
+            fig.add_trace(go.Scatter(
+                x=settled_sorted['logged_at'],
+                y=running_max,
+                mode='lines',
+                name='Peak',
+                line=dict(color='gray', width=1, dash='dash'),
+                opacity=0.5
+            ))
+
             fig.update_layout(
                 template='plotly_dark',
                 height=400,
                 margin=dict(l=0, r=0, t=30, b=0),
                 hovermode='x unified',
                 yaxis_title="Profit ($)",
-                xaxis_title="Date"
+                xaxis_title="Date",
+                showlegend=True
             )
 
             st.plotly_chart(fig, use_container_width=True)
 
             # Recent performance
-            st.markdown("#### Recent Bets (Last 10)")
+            st.markdown("#### 🎯 Recent Bets (Last 10)")
 
             recent = settled.nlargest(10, 'logged_at')[
                 ['commence_time', 'away_team', 'home_team', 'bet_side', 'line',

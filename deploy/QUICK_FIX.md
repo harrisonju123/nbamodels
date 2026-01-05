@@ -3,8 +3,30 @@
 ## Problem
 Services are running but can't access dashboard in browser.
 
-## Most Common Cause
-DigitalOcean Cloud Firewall or UFW blocking ports.
+## Most Common Causes
+1. **Missing Python modules** (ModuleNotFoundError)
+2. **DigitalOcean Cloud Firewall or UFW blocking ports**
+
+---
+
+## Fix 0: Missing Modules (RUN THIS FIRST!)
+
+If you see `ModuleNotFoundError` in the logs, the code is missing required files.
+
+```bash
+# SSH into droplet
+ssh root@YOUR_DROPLET_IP
+
+# Pull latest code and restart
+cd /root/nbamodels
+git pull
+chmod +x deploy/fix_and_restart.sh
+./deploy/fix_and_restart.sh
+```
+
+This fixes the missing `dashboard_enhancements` and `live_bet_settlement` modules.
+
+---
 
 ---
 

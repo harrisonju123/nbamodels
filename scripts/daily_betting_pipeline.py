@@ -37,7 +37,7 @@ from src.data.line_history import LineHistoryManager
 from src.betting.edge_strategy import EdgeStrategy, BetSignal
 from src.betting.optimized_strategy import OptimizedBettingStrategy, OptimizedStrategyConfig
 from src.betting.line_shopping import LineShoppingEngine
-from src.bet_tracker import log_bet
+from src.bet_tracker import log_bet, american_to_implied_prob
 from src.bankroll.bankroll_manager import BankrollManager
 
 
@@ -604,7 +604,7 @@ def log_bet_recommendation(
 
     # Calculate probabilities
     model_prob = 0.50 + (signal.model_edge * 0.01)  # Rough approximation
-    market_prob = 0.50
+    market_prob = american_to_implied_prob(odds)  # Calculate from actual odds
     edge = model_prob - market_prob
 
     # Calculate bet size using OptimizedBettingStrategy if provided

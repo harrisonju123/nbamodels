@@ -97,13 +97,23 @@ class LiveWinProbModel:
         """
         quarter = game_state.get('quarter', 1)
 
-        # Check if game_clock is provided (in seconds)
+        # Get time remaining in current quarter
+        # Try different field names and formats
+        time_in_quarter = 0
         if 'game_clock' in game_state and game_state['game_clock']:
-            time_in_quarter = game_state['game_clock']
-        else:
-            # Parse time string ("7:23" format)
-            time_str = game_state.get('time_remaining') or game_state.get('period_time_remaining', '')
-            time_in_quarter = self._parse_time_string(time_str)
+            clock = game_state['game_clock']
+            # Check if it's already an int (seconds) or needs parsing
+            if isinstance(clock, (int, float)):
+                time_in_quarter = int(clock)
+            else:
+                # It's a string like "5:17", parse it
+                time_in_quarter = self._parse_time_string(str(clock))
+        elif 'time_remaining' in game_state:
+            time_str = game_state['time_remaining']
+            time_in_quarter = self._parse_time_string(str(time_str))
+        elif 'period_time_remaining' in game_state:
+            time_str = game_state['period_time_remaining']
+            time_in_quarter = self._parse_time_string(str(time_str))
 
         # Calculate total time remaining
         # Each quarter is 12 minutes = 720 seconds

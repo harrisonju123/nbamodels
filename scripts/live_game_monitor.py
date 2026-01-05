@@ -20,6 +20,10 @@ import argparse
 from datetime import datetime, timedelta
 from typing import Dict, List
 from loguru import logger
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
 
 from src.data.live_game_client import LiveGameClient
 from src.data.live_odds_tracker import LiveOddsTracker
@@ -155,9 +159,9 @@ class LiveGameMonitor:
             logger.debug(f"   Odds check in {time_until_next:.0f}s")
             return
 
-        # Get live odds for this game
+        # Get live odds for this game (match by teams since APIs use different game IDs)
         logger.info(f"   Fetching odds...")
-        odds = self.odds_tracker.get_live_odds([game_id])
+        odds = self.odds_tracker.get_live_odds(teams=[(home_team, away_team)])
 
         if odds.empty:
             logger.warning(f"   ⚠️  No odds available")
@@ -169,8 +173,15 @@ class LiveGameMonitor:
             saved = self.odds_tracker.save_odds_snapshot(odds)
             logger.debug(f"   ✓ Saved {saved} odds records")
 
+        # Get the Odds API game_id (different from NBA Stats game_id)
+        odds_game_id = odds['game_id'].iloc[0] if not odds.empty else None
+        if not odds_game_id:
+            logger.warning(f"   ⚠️  Could not determine odds game_id")
+            self.last_odds_check[game_id] = now
+            return
+
         # Get latest odds for edge detection
-        latest_odds = self.odds_tracker.get_latest_odds(game_id)
+        latest_odds = self.odds_tracker.get_latest_odds(odds_game_id)
 
         if not latest_odds:
             logger.warning(f"   ⚠️  Could not parse odds")

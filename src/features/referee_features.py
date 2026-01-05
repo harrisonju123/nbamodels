@@ -334,6 +334,9 @@ class RefereeFeatureBuilder:
 
             if pd.isna(game_id) or game_id not in game_ids:
                 features = self._empty_features()
+            elif all_assignments.empty:
+                # No referee assignments available
+                features = self._empty_features()
             else:
                 # Get assignments for this specific game
                 game_assignments = all_assignments[all_assignments['game_id'] == game_id]
@@ -358,7 +361,13 @@ class RefereeFeatureBuilder:
             features_list.append(features)
 
         features_df = pd.DataFrame(features_list)
-        return pd.concat([games_df.reset_index(drop=True), features_df], axis=1)
+
+        # Preserve game_id for merging
+        result = games_df[[game_id_col]].reset_index(drop=True).copy()
+        for col in features_df.columns:
+            result[col] = features_df[col].values
+
+        return result
 
     def get_crew_summary(self, game_id: str) -> Dict:
         """

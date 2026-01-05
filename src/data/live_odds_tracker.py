@@ -6,13 +6,14 @@ Fetches and stores odds movements during games.
 """
 
 import sqlite3
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import List, Dict, Optional
 import pandas as pd
 from loguru import logger
 
 from src.data.odds_api import OddsAPIClient
 from src.data.live_betting_db import DB_PATH
+from src.utils.constants import ABBREV_TO_TEAM_NAME
 
 
 class LiveOddsTracker:
@@ -21,12 +22,13 @@ class LiveOddsTracker:
     def __init__(self):
         self.odds_client = OddsAPIClient()
 
-    def get_live_odds(self, game_ids: Optional[List[str]] = None) -> pd.DataFrame:
+    def get_live_odds(self, game_ids: Optional[List[str]] = None, teams: Optional[List[tuple]] = None) -> pd.DataFrame:
         """
         Fetch current odds for live games.
 
         Args:
-            game_ids: Optional list of game IDs to filter
+            game_ids: Optional list of game IDs to filter (not used for team matching)
+            teams: Optional list of (home_team, away_team) tuples to filter
 
         Returns:
             DataFrame with live odds
@@ -41,17 +43,18 @@ class LiveOddsTracker:
             return odds
 
         # Filter to live games (commence_time in past)
-        now = datetime.now()
+        # Use pandas Timestamp for timezone-aware comparison
+        now = pd.Timestamp.now(tz='UTC')
 
         # Convert commence_time to datetime if it's not already
         if 'commence_time' in odds.columns:
             if not pd.api.types.is_datetime64_any_dtype(odds['commence_time']):
-                odds['commence_datetime'] = pd.to_datetime(odds['commence_time'])
+                odds['commence_datetime'] = pd.to_datetime(odds['commence_time'], utc=True)
             else:
-                odds['commence_datetime'] = odds['commence_time']
+                odds['commence_datetime'] = pd.to_datetime(odds['commence_time'], utc=True)
 
             # Games that have started (but likely not finished yet - within 4 hours)
-            time_threshold = now - timedelta(hours=4)
+            time_threshold = now - pd.Timedelta(hours=4)
             live_odds = odds[
                 (odds['commence_datetime'] <= now) &
                 (odds['commence_datetime'] >= time_threshold)
@@ -59,9 +62,25 @@ class LiveOddsTracker:
 
             logger.info(f"Filtered to {len(live_odds)} live game odds")
 
-            # Filter to specific games if provided
-            if game_ids:
-                live_odds = live_odds[live_odds['game_id'].isin(game_ids)]
+            # Filter to specific teams if provided
+            if teams:
+                # Convert abbreviations to full names for matching
+                # teams is a list of (home_abbrev, away_abbrev) tuples
+                full_name_teams = []
+                for home_abbrev, away_abbrev in teams:
+                    home_full = ABBREV_TO_TEAM_NAME.get(home_abbrev, home_abbrev)
+                    away_full = ABBREV_TO_TEAM_NAME.get(away_abbrev, away_abbrev)
+                    full_name_teams.append((home_full, away_full))
+                    logger.debug(f"Matching {home_abbrev} @ {away_abbrev} as {home_full} vs {away_full}")
+
+                # Create team pair matching
+                def matches_team_pair(row):
+                    for home, away in full_name_teams:
+                        if row['home_team'] == home and row['away_team'] == away:
+                            return True
+                    return False
+
+                live_odds = live_odds[live_odds.apply(matches_team_pair, axis=1)].copy()
                 logger.info(f"Filtered to {len(live_odds)} requested games")
 
             return live_odds
@@ -73,7 +92,7 @@ class LiveOddsTracker:
         Save odds snapshot to database.
 
         Args:
-            odds_df: DataFrame of odds
+            odds_df: DataFrame of odds in long format (from odds_api)
 
         Returns:
             Number of rows saved
@@ -86,10 +105,8 @@ class LiveOddsTracker:
         saved_count = 0
 
         try:
-            for _, row in odds_df.iterrows():
-                # Determine market type and extract values
-                market = row.get('market', 'unknown')
-
+            # Group by game_id, bookmaker, market to pivot from long to wide format
+            for (game_id, bookmaker, market), group in odds_df.groupby(['game_id', 'bookmaker', 'market']):
                 # Initialize all odds columns
                 home_odds = None
                 away_odds = None
@@ -99,17 +116,29 @@ class LiveOddsTracker:
                 total_value = None
 
                 # Extract values based on market type
-                if market == 'h2h':
-                    home_odds = row.get('home_odds')
-                    away_odds = row.get('away_odds')
-                elif market == 'spreads':
-                    spread_value = row.get('spread_home', row.get('point', row.get('spread_value')))
-                    home_odds = row.get('home_odds')
-                    away_odds = row.get('away_odds')
-                elif market == 'totals':
-                    total_value = row.get('total_over', row.get('point', row.get('total_value')))
-                    over_odds = row.get('over_odds')
-                    under_odds = row.get('under_odds')
+                if market == 'moneyline':
+                    # Moneyline - find home and away odds
+                    for _, row in group.iterrows():
+                        if row.get('team') == 'home':
+                            home_odds = row.get('odds')
+                        elif row.get('team') == 'away':
+                            away_odds = row.get('odds')
+                elif market == 'spread':
+                    # Spread - find home and away lines + odds
+                    for _, row in group.iterrows():
+                        if row.get('team') == 'home':
+                            spread_value = row.get('line')
+                            home_odds = row.get('odds')
+                        elif row.get('team') == 'away':
+                            away_odds = row.get('odds')
+                elif market == 'total':
+                    # Total - find over/under lines + odds
+                    for _, row in group.iterrows():
+                        if row.get('team') == 'over':
+                            total_value = row.get('line')
+                            over_odds = row.get('odds')
+                        elif row.get('team') == 'under':
+                            under_odds = row.get('odds')
 
                 conn.execute("""
                     INSERT OR IGNORE INTO live_odds_snapshot
@@ -118,9 +147,9 @@ class LiveOddsTracker:
                      spread_value, total_value)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
-                    row['game_id'],
+                    game_id,
                     timestamp,
-                    row.get('bookmaker', 'unknown'),
+                    bookmaker,
                     market,
                     home_odds,
                     away_odds,
@@ -214,7 +243,7 @@ class LiveOddsTracker:
         # Get latest spread
         spread = conn.execute("""
             SELECT * FROM live_odds_snapshot
-            WHERE game_id = ? AND market = 'spreads'
+            WHERE game_id = ? AND market = 'spread'
             ORDER BY timestamp DESC
             LIMIT 1
         """, (game_id,)).fetchone()
@@ -231,7 +260,7 @@ class LiveOddsTracker:
         # Get latest moneyline
         moneyline = conn.execute("""
             SELECT * FROM live_odds_snapshot
-            WHERE game_id = ? AND market = 'h2h'
+            WHERE game_id = ? AND market = 'moneyline'
             ORDER BY timestamp DESC
             LIMIT 1
         """, (game_id,)).fetchone()
@@ -247,7 +276,7 @@ class LiveOddsTracker:
         # Get latest total
         total = conn.execute("""
             SELECT * FROM live_odds_snapshot
-            WHERE game_id = ? AND market = 'totals'
+            WHERE game_id = ? AND market = 'total'
             ORDER BY timestamp DESC
             LIMIT 1
         """, (game_id,)).fetchone()

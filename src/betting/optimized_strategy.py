@@ -30,9 +30,9 @@ class OptimizedStrategyConfig:
     min_confidence: float = 0.55  # Minimum model confidence
     high_confidence_threshold: float = 0.75  # Consider "very confident"
 
-    # Kelly sizing (reduced from 25% to 10%)
-    kelly_fraction: float = 0.10  # 10% of Kelly (vs 25% before)
-    max_bet_size: float = 0.05  # Max 5% of bankroll per bet
+    # Kelly sizing (now dynamic based on edge strength)
+    kelly_fraction: float = 0.10  # Default/fallback Kelly (not used with dynamic scaling)
+    max_bet_size: float = 0.10  # Max 10% of bankroll per bet (raised for dynamic Kelly)
     min_bet_size: float = 0.01  # Min 1% of bankroll
 
     # Alternative data filters (NEW)
@@ -188,17 +188,37 @@ class OptimizedBettingStrategy:
         # So we use edge as-is here
         adjusted_edge = edge
 
-        # Kelly formula: (edge * odds - 1) / (odds - 1)
+        # Kelly formula: f* = (p * b - q) / b
+        # where p = win probability, q = lose probability, b = decimal odds - 1
         b = odds - 1  # Net odds (profit multiplier)
-        kelly = (adjusted_edge * odds - (1 - adjusted_edge)) / b
+
+        # Use model confidence (win probability) for Kelly calculation
+        # If not provided, estimate from edge and market-implied probability
+        if confidence is not None:
+            p = confidence  # Use provided model probability
+        else:
+            # Estimate: assume market is fair (no vig), so market_prob ≈ 1/odds
+            # Then model_prob = market_prob + edge
+            market_prob = 1 / odds
+            p = market_prob + adjusted_edge
+
+        q = 1 - p
+        kelly = (p * b - q) / b
 
         # Check for negative Kelly (indicates no edge after all adjustments)
         if kelly < 0:
             logger.warning(f"Negative Kelly ({kelly:.3f}) for edge={adjusted_edge:.3f}, odds={odds:.3f}")
             return 0.0  # Don't bet
 
-        # Apply Kelly fraction
-        kelly_fraction = self.config.kelly_fraction
+        # Apply Kelly fraction - dynamically scaled based on edge strength
+        # (Updated 2026-01-04: Analytics show >20% Kelly bets win 64.7% with +27.5% ROI,
+        #  so we can be more aggressive on high-conviction plays)
+        if adjusted_edge >= 0.10:  # ≥10% edge (very high conviction)
+            kelly_fraction = 0.40  # 40% Kelly
+        elif adjusted_edge >= 0.08:  # ≥8% edge (high conviction)
+            kelly_fraction = 0.30  # 30% Kelly
+        else:  # 7-8% edge (moderate conviction, meets new 7% threshold)
+            kelly_fraction = 0.25  # 25% Kelly (default)
 
         # Reduce sizing after consecutive losses
         if self.consecutive_losses >= self.config.consecutive_loss_limit:

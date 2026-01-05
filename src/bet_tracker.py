@@ -222,23 +222,28 @@ def log_bet(
 
     logged_at = datetime.now().isoformat()
 
+    # ALWAYS calculate Kelly percentage (for display and analysis)
+    # Convert American odds to decimal
+    if odds > 0:
+        decimal_odds = (odds / 100) + 1
+    else:
+        decimal_odds = (100 / abs(odds)) + 1
+
+    # Kelly formula: f* = (bp - q) / b
+    # where b = decimal_odds - 1, p = model_prob, q = 1 - model_prob
+    b = decimal_odds - 1
+    if b > 0 and model_prob > 0:
+        # Full Kelly percentage
+        kelly_pct = (model_prob * b - (1 - model_prob)) / b
+        kelly_pct = max(0, kelly_pct)  # Don't bet on negative Kelly
+    else:
+        kelly_pct = 0
+
     # Calculate bet amount using Kelly if not provided
-    # Default to 1% Kelly of $1000 bankroll if bet_amount not specified
     if bet_amount is None:
-        # Convert American odds to decimal
-        if odds > 0:
-            decimal_odds = (odds / 100) + 1
-        else:
-            decimal_odds = (100 / abs(odds)) + 1
-
-        # Kelly formula: (edge * odds - (1 - edge)) / (odds - 1)
-        # Use 10% Kelly fraction for safety
-        kelly_fraction = 0.10
+        kelly_fraction = 0.10  # Use 10% fractional Kelly for safety
         bankroll = 1000.0  # Default paper trading bankroll
-
-        b = decimal_odds - 1
-        kelly_bet = (edge * decimal_odds - (1 - model_prob)) / b if b > 0 else 0
-        bet_amount = max(10.0, min(50.0, kelly_bet * kelly_fraction * bankroll))  # Min $10, max $50
+        bet_amount = max(10.0, min(50.0, kelly_pct * kelly_fraction * bankroll))  # Min $10, max $50
 
     # Use INSERT OR IGNORE to prevent race condition duplicates
     cursor = conn.execute("""
@@ -250,7 +255,7 @@ def log_bet(
     """, (
         bet_id, game_id, home_team, away_team, str(commence_time),
         bet_type, bet_side, odds, line, model_prob, market_prob,
-        edge, kelly, bookmaker, logged_at, bet_amount
+        edge, kelly_pct, bookmaker, logged_at, bet_amount
     ))
 
     conn.commit()
@@ -302,11 +307,21 @@ def log_manual_bet(
     # Calculate implied probability from odds
     if odds > 0:
         market_prob = 100 / (odds + 100)
+        decimal_odds = (odds / 100) + 1
     else:
         market_prob = abs(odds) / (abs(odds) + 100)
+        decimal_odds = (100 / abs(odds)) + 1
 
     # Calculate edge if model_prob provided
     edge = (model_prob - market_prob) if model_prob else None
+
+    # Calculate Kelly percentage if model_prob provided
+    kelly_pct = None
+    if model_prob:
+        b = decimal_odds - 1
+        if b > 0 and model_prob > 0:
+            kelly_pct = (model_prob * b - (1 - model_prob)) / b
+            kelly_pct = max(0, kelly_pct)
 
     logged_at = datetime.now().isoformat()
 
@@ -315,12 +330,12 @@ def log_manual_bet(
         INSERT OR IGNORE INTO bets (
             id, game_id, home_team, away_team, commence_time,
             bet_type, bet_side, odds, line, bet_amount,
-            model_prob, market_prob, edge, bookmaker, logged_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            model_prob, market_prob, edge, kelly, bookmaker, logged_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         bet_id, game_id, home_team, away_team, str(commence_time),
         bet_type, bet_side, odds, line, bet_amount,
-        model_prob, market_prob, edge, bookmaker, logged_at
+        model_prob, market_prob, edge, kelly_pct, bookmaker, logged_at
     ))
 
     conn.commit()

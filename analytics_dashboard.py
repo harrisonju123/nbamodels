@@ -85,7 +85,7 @@ def load_bets():
 
     # Convert timestamps
     df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
-    df['game_date'] = pd.to_datetime(df['game_date'], format='ISO8601', utc=True)
+    df['commence_time'] = pd.to_datetime(df['commence_time'], format='ISO8601', utc=True)
 
     return df
 
@@ -254,12 +254,12 @@ with tab2:
             st.markdown("#### Recent Bets (Last 10)")
 
             recent = settled.nlargest(10, 'logged_at')[
-                ['game_date', 'away_team', 'home_team', 'bet_side', 'line',
+                ['commence_time', 'away_team', 'home_team', 'bet_side', 'line',
                  'bet_amount', 'outcome', 'profit']
             ].copy()
 
             # Format for display
-            recent['game_date'] = recent['game_date'].dt.strftime('%m/%d')
+            recent['commence_time'] = recent['commence_time'].dt.strftime('%m/%d')
             recent['bet_amount'] = recent['bet_amount'].apply(lambda x: f"${x:.0f}")
             recent['profit'] = recent['profit'].apply(
                 lambda x: f"${x:+.2f}" if pd.notna(x) else "-"
@@ -270,7 +270,7 @@ with tab2:
                 use_container_width=True,
                 hide_index=True,
                 column_config={
-                    "game_date": "Date",
+                    "commence_time": "Date",
                     "away_team": "Away",
                     "home_team": "Home",
                     "bet_side": "Side",
@@ -330,12 +330,12 @@ with tab3:
         # Display table
         st.caption(f"Showing {len(df_filtered)} bets")
 
-        display_cols = ['logged_at', 'game_date', 'away_team', 'home_team',
+        display_cols = ['logged_at', 'commence_time', 'away_team', 'home_team',
                        'bet_side', 'line', 'bet_amount', 'odds', 'outcome', 'profit']
 
         df_display = df_filtered[display_cols].copy()
         df_display['logged_at'] = df_display['logged_at'].dt.strftime('%m/%d %H:%M')
-        df_display['game_date'] = df_display['game_date'].dt.strftime('%m/%d %H:%M')
+        df_display['commence_time'] = df_display['commence_time'].dt.strftime('%m/%d %H:%M')
         df_display['bet_amount'] = df_display['bet_amount'].apply(lambda x: f"${x:.0f}")
         df_display['profit'] = df_display['profit'].apply(
             lambda x: f"${x:+.2f}" if pd.notna(x) else "-"
@@ -347,7 +347,7 @@ with tab3:
             hide_index=True,
             column_config={
                 "logged_at": "Logged",
-                "game_date": "Game",
+                "commence_time": "Game",
                 "away_team": "Away",
                 "home_team": "Home",
                 "bet_side": "Side",

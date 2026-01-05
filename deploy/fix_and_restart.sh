@@ -12,21 +12,27 @@ git pull origin main
 echo "✓ Code updated"
 echo
 
-echo "2. Restarting dashboard service..."
+echo "2. Installing missing Python packages..."
+source .venv/bin/activate
+pip install -r requirements.txt --quiet
+echo "✓ Packages installed"
+echo
+
+echo "3. Restarting dashboard service..."
 systemctl restart nba-dashboard
 echo "✓ Dashboard restarted"
 echo
 
-echo "3. Restarting API service..."
+echo "4. Restarting API service..."
 systemctl restart nba-api
 echo "✓ API restarted"
 echo
 
-echo "4. Waiting 5 seconds for services to start..."
+echo "5. Waiting 5 seconds for services to start..."
 sleep 5
 echo
 
-echo "5. Checking service status..."
+echo "6. Checking service status..."
 echo
 echo "--- Dashboard Status ---"
 systemctl status nba-dashboard --no-pager | head -15
@@ -35,7 +41,7 @@ echo "--- API Status ---"
 systemctl status nba-api --no-pager | head -15
 echo
 
-echo "6. Getting your access URLs..."
+echo "7. Getting your access URLs..."
 DROPLET_IP=$(curl -s ifconfig.me)
 echo
 echo "=== Access Your Dashboard ==="
@@ -44,7 +50,7 @@ echo "API:       http://$DROPLET_IP:8000"
 echo "API Docs:  http://$DROPLET_IP:8000/docs"
 echo
 
-echo "7. Testing local access..."
+echo "8. Testing local access..."
 echo
 echo "Testing dashboard..."
 curl -I http://localhost:8501 2>&1 | head -3

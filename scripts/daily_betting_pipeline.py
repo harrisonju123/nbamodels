@@ -40,6 +40,20 @@ from src.betting.line_shopping import LineShoppingEngine
 from src.bet_tracker import log_bet, american_to_implied_prob
 from src.bankroll.bankroll_manager import BankrollManager
 
+# Risk Management Integration
+from src.risk import (
+    RiskConfig,
+    CorrelationAwarePositionSizer,
+    CorrelationTracker,
+    DrawdownScaler,
+    ExposureManager,
+    BetCorrelationContext,
+    TeamCorrelation,
+    get_team_conference,
+    get_team_division
+)
+from src.betting.kelly import KellyBetSizer
+
 
 # Paper trading flag (global)
 PAPER_TRADING = True
@@ -549,7 +563,9 @@ def log_bet_recommendation(
     paper_mode: bool = True,
     dry_run: bool = False,
     bankroll: float = 1000.0,
-    strategy: OptimizedBettingStrategy = None
+    strategy: OptimizedBettingStrategy = None,
+    position_sizer: CorrelationAwarePositionSizer = None,
+    drawdown: float = 0.0
 ) -> Dict:
     """
     Log bet recommendation to database with line shopping.
@@ -607,14 +623,54 @@ def log_bet_recommendation(
     market_prob = american_to_implied_prob(odds)  # Calculate from actual odds
     edge = model_prob - market_prob
 
-    # Calculate bet size using OptimizedBettingStrategy if provided
-    if strategy:
-        # Convert American odds to decimal
-        if odds > 0:
-            decimal_odds = (odds / 100) + 1
-        else:
-            decimal_odds = (100 / abs(odds)) + 1
+    # Convert American odds to decimal
+    if odds > 0:
+        decimal_odds = (odds / 100) + 1
+    else:
+        decimal_odds = (100 / abs(odds)) + 1
 
+    # Calculate bet size using Risk-Aware Position Sizer if provided
+    if position_sizer:
+        # Build correlation context
+        home_team_abbrev = _normalize_team_name(signal.home_team)
+        away_team_abbrev = _normalize_team_name(signal.away_team)
+
+        context = BetCorrelationContext(
+            game_id=signal.game_id,
+            home_team=TeamCorrelation(
+                team=home_team_abbrev,
+                conference=get_team_conference(home_team_abbrev),
+                division=get_team_division(home_team_abbrev)
+            ),
+            away_team=TeamCorrelation(
+                team=away_team_abbrev,
+                conference=get_team_conference(away_team_abbrev),
+                division=get_team_division(away_team_abbrev)
+            ),
+            bet_side=signal.bet_side,
+            bet_type='spread'
+        )
+
+        # Calculate risk-aware position size
+        position_result = position_sizer.calculate_position_size(
+            bankroll=bankroll,
+            win_prob=model_prob,
+            odds=decimal_odds,
+            context=context,
+            drawdown=drawdown
+        )
+
+        bet_amount = position_result.final_size
+
+        # Log risk adjustments
+        if position_result.adjustments:
+            logger.info(f"   🛡️  Risk adjustments: {', '.join(position_result.adjustments)}")
+            logger.info(f"   📊 Correlation factor: {position_result.correlation_factor:.2%}")
+            logger.info(f"   📉 Drawdown factor: {position_result.drawdown_factor:.2%}")
+            logger.info(f"   💰 Final size: ${bet_amount:.2f} (from ${position_result.kelly_size:.2f} Kelly)")
+
+    elif strategy:
+        # Fallback to OptimizedBettingStrategy
         bet_amount = strategy.calculate_bet_size(
             edge=edge,
             odds=decimal_odds,
@@ -800,7 +856,7 @@ def main():
     else:
         all_odds_df = pd.DataFrame()
 
-    # Step 9: Log bets with optimized sizing and line shopping
+    # Step 9: Log bets with risk-aware sizing and line shopping
     if actionable and not args.dry_run:
         logger.info("\n8️⃣  Logging bets to database...")
 
@@ -814,11 +870,42 @@ def main():
             bankroll_mgr.initialize_bankroll(1000.0)
             current_bankroll = 1000.0
 
-        # Initialize optimized strategy for bet sizing
-        sizing_strategy = OptimizedBettingStrategy(OptimizedStrategyConfig())
+        # Get current drawdown
+        stats = bankroll_mgr.get_bankroll_stats()
+        current_drawdown = stats.get('max_drawdown', 0.0)
+
+        # Initialize risk management components
+        logger.info("   🛡️  Initializing risk management system...")
+        risk_config = RiskConfig()
+        kelly_sizer = KellyBetSizer(fraction=0.25)  # 25% Kelly
+        correlation_tracker = CorrelationTracker(risk_config)
+        drawdown_scaler = DrawdownScaler(risk_config)
+        exposure_manager = ExposureManager(risk_config)
+
+        position_sizer = CorrelationAwarePositionSizer(
+            config=risk_config,
+            kelly_sizer=kelly_sizer,
+            correlation_tracker=correlation_tracker,
+            drawdown_scaler=drawdown_scaler,
+            exposure_manager=exposure_manager
+        )
 
         logger.info(f"   💰 Current bankroll: ${current_bankroll:,.2f}")
+        logger.info(f"   📉 Current drawdown: {current_drawdown:.1%}")
 
+        # Check circuit breaker
+        should_pause, pause_reason = drawdown_scaler.should_pause_betting(current_drawdown)
+        if should_pause:
+            logger.error(f"\n🚨 CIRCUIT BREAKER ACTIVATED: {pause_reason}")
+            logger.error(f"   Drawdown: {current_drawdown:.1%}")
+            logger.error(f"   No bets will be placed until drawdown recovers below {risk_config.drawdown_hard_stop:.0%}")
+            logger.info("\n" + "=" * 80)
+            logger.info("❌ Pipeline stopped due to circuit breaker")
+            logger.info("=" * 80)
+            return 1
+
+        # Log bet with risk management
+        bets_placed = 0
         for signal in actionable:
             game = games_df[games_df['game_id'] == signal.game_id].iloc[0]
             log_bet_recommendation(
@@ -828,12 +915,16 @@ def main():
                 paper_mode=PAPER_TRADING,
                 dry_run=args.dry_run,
                 bankroll=current_bankroll,
-                strategy=sizing_strategy
+                strategy=None,  # Disable OptimizedBettingStrategy, use risk-aware sizing instead
+                position_sizer=position_sizer,
+                drawdown=current_drawdown
             )
+            bets_placed += 1
 
-        logger.info(f"   ✓ Logged {len(actionable)} bets")
+        logger.info(f"   ✓ Logged {bets_placed} bets")
         logger.info(f"   💾 Mode: {'Paper trade' if PAPER_TRADING else 'Live bet'}")
-        logger.info(f"   💰 Bankroll sizing: 10% Kelly with optimized thresholds")
+        logger.info(f"   🛡️  Risk management: Correlation-aware sizing with drawdown protection")
+        logger.info(f"   💰 Base sizing: 25% Kelly")
         if not all_odds_df.empty:
             logger.info(f"   🛒 Line shopping: Best odds from {unique_books} bookmakers")
 

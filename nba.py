@@ -239,6 +239,132 @@ def cmd_daily(args):
     print("="*80)
 
 
+def cmd_report(args):
+    """Generate performance reports."""
+    report_type = args.type
+
+    if report_type == 'daily':
+        # Send daily Discord update
+        print("\n" + "="*80)
+        print("📊 SENDING DAILY DISCORD UPDATE")
+        print("="*80)
+
+        try:
+            from src.reporting.discord_notifier import DiscordNotifier
+
+            notifier = DiscordNotifier()
+            success = notifier.send_daily_update()
+
+            if success:
+                print("\n✅ Daily update sent to Discord successfully")
+            else:
+                print("\n❌ Failed to send Discord update (check webhook configuration)")
+                return 1
+
+        except Exception as e:
+            print(f"\n❌ Error sending daily update: {e}")
+            return 1
+
+    elif report_type == 'weekly':
+        # Generate weekly review
+        print("\n" + "="*80)
+        print("📊 GENERATING WEEKLY REVIEW")
+        print("="*80)
+
+        try:
+            from src.reporting.weekly_report import WeeklyReportGenerator
+
+            generator = WeeklyReportGenerator()
+            report = generator.generate_report(weeks_back=args.weeks or 1)
+            formatted = generator.format_report_text(report)
+
+            print(f"\n{formatted}")
+
+            # Save to file
+            report_dir = PROJECT_ROOT / "data" / "reports"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_file = report_dir / f"weekly_report_{datetime.now().strftime('%Y%m%d')}.txt"
+
+            with open(report_file, 'w') as f:
+                f.write(formatted)
+
+            print(f"\n💾 Report saved to: {report_file}")
+
+        except Exception as e:
+            print(f"\n❌ Error generating weekly report: {e}")
+            return 1
+
+    elif report_type == 'monthly':
+        # Generate monthly report
+        print("\n" + "="*80)
+        print("📊 GENERATING MONTHLY REPORT")
+        print("="*80)
+
+        try:
+            from src.reporting.monthly_report import MonthlyReportGenerator
+
+            generator = MonthlyReportGenerator()
+            report = generator.generate_monthly_report(months_back=args.months or 1)
+            formatted = generator.format_monthly_report_text(report)
+
+            print(f"\n{formatted}")
+
+            # Save to file
+            report_dir = PROJECT_ROOT / "data" / "reports"
+            report_dir.mkdir(parents=True, exist_ok=True)
+            report_file = report_dir / f"monthly_report_{datetime.now().strftime('%Y%m%d')}.txt"
+
+            with open(report_file, 'w') as f:
+                f.write(formatted)
+
+            print(f"\n💾 Report saved to: {report_file}")
+
+        except Exception as e:
+            print(f"\n❌ Error generating monthly report: {e}")
+            return 1
+
+    return 0
+
+
+def cmd_reconcile(args):
+    """Run reconciliation checks."""
+    print("\n" + "="*80)
+    print("🔍 RUNNING RECONCILIATION")
+    print("="*80)
+
+    try:
+        from src.reporting.reconciliation import ReconciliationEngine
+
+        engine = ReconciliationEngine()
+        report = engine.run_full_reconciliation(days_back=args.days or 7)
+        formatted = engine.format_reconciliation_report(report)
+
+        print(f"\n{formatted}")
+
+        # Save to file
+        report_dir = PROJECT_ROOT / "data" / "reports"
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_file = report_dir / f"reconciliation_{datetime.now().strftime('%Y%m%d_%H%M%S')}.txt"
+
+        with open(report_file, 'w') as f:
+            f.write(formatted)
+
+        print(f"\n💾 Report saved to: {report_file}")
+
+        # Return error code if issues found
+        if report['summary']['errors'] > 0:
+            print("\n⚠️  Reconciliation found errors - please review")
+            return 1
+
+    except Exception as e:
+        print(f"\n❌ Error running reconciliation: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+    return 0
+
+
 def cmd_init(args):
     """Initialize the system (first-time setup)."""
     print("\n" + "="*80)
@@ -258,7 +384,7 @@ def cmd_init(args):
 
     # Create directories
     print("\n1️⃣  Creating directories...")
-    dirs = ["data/bets", "data/lines", "data/backtest", "logs", "models"]
+    dirs = ["data/bets", "data/lines", "data/backtest", "data/reports", "logs", "models"]
     for dir_path in dirs:
         (PROJECT_ROOT / dir_path).mkdir(parents=True, exist_ok=True)
     print("   ✓ Directories created")
@@ -303,12 +429,18 @@ Examples:
   python nba.py train               # Retrain prediction model
   python nba.py backtest            # Run backtest
   python nba.py init                # First-time setup
+  python nba.py report daily        # Send daily Discord update
+  python nba.py report weekly       # Generate weekly review
+  python nba.py report monthly      # Generate monthly report
+  python nba.py reconcile           # Run reconciliation checks
 
 Common Workflows:
   - Morning routine:   python nba.py update && python nba.py status
   - Before games:      python nba.py bets
   - After games:       python nba.py settle
-  - Weekly review:     python nba.py dashboard
+  - Weekly review:     python nba.py report weekly
+  - Monthly review:    python nba.py report monthly
+  - Data validation:   python nba.py reconcile
         """
     )
 
@@ -348,6 +480,18 @@ Common Workflows:
     # Init command
     subparsers.add_parser('init', help='Initialize system (first-time setup)')
 
+    # Report command
+    report_parser = subparsers.add_parser('report', help='Generate performance reports')
+    report_parser.add_argument('type', choices=['daily', 'weekly', 'monthly'],
+                              help='Type of report to generate')
+    report_parser.add_argument('--weeks', type=int, help='Number of weeks for weekly report (default: 1)')
+    report_parser.add_argument('--months', type=int, help='Number of months for monthly report (default: 1)')
+
+    # Reconcile command
+    reconcile_parser = subparsers.add_parser('reconcile', help='Run reconciliation checks')
+    reconcile_parser.add_argument('--days', type=int, default=7,
+                                 help='Number of days to reconcile (default: 7)')
+
     args = parser.parse_args()
 
     if not args.command:
@@ -366,6 +510,8 @@ Common Workflows:
         'settle': cmd_settle,
         'daily': cmd_daily,
         'init': cmd_init,
+        'report': cmd_report,
+        'reconcile': cmd_reconcile,
     }
 
     handler = commands.get(args.command)

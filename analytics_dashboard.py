@@ -87,15 +87,52 @@ def load_bets():
     df['logged_at'] = pd.to_datetime(df['logged_at'], format='ISO8601', utc=True)
     df['commence_time'] = pd.to_datetime(df['commence_time'], format='ISO8601', utc=True)
 
+    # Ensure strategy_type column exists (for backwards compatibility)
+    if 'strategy_type' not in df.columns:
+        df['strategy_type'] = 'spread'  # Default for old bets
+
     return df
 
 df_all = load_bets()
 
+# Strategy filter (sidebar)
+with st.sidebar:
+    st.markdown("### 🎯 Strategy Filter")
+
+    if not df_all.empty and 'strategy_type' in df_all.columns:
+        available_strategies = ['All'] + sorted(df_all['strategy_type'].dropna().unique().tolist())
+        strategy_filter = st.selectbox(
+            "Select Strategy",
+            available_strategies,
+            help="Filter bets by strategy type"
+        )
+
+        # Apply filter
+        if strategy_filter != 'All':
+            df_filtered = df_all[df_all['strategy_type'] == strategy_filter].copy()
+            st.caption(f"Showing {len(df_filtered)} {strategy_filter} bets")
+        else:
+            df_filtered = df_all.copy()
+            st.caption(f"Showing all {len(df_filtered)} bets")
+    else:
+        strategy_filter = 'All'
+        df_filtered = df_all.copy()
+
+    st.markdown("---")
+    st.caption("💡 **Strategies Available:**")
+    st.caption("• Spread - Point spread betting")
+    st.caption("• Totals - Over/Under betting")
+    st.caption("• Arbitrage - Cross-book arbs")
+    st.caption("• Player Props - Player stats")
+else:
+    df_filtered = df_all.copy()
+    strategy_filter = 'All'
+
 # Quick stats at top
 col1, col2, col3, col4 = st.columns(4)
 
-if not df_all.empty:
-    settled = df_all[df_all['outcome'].notna()]
+if not df_filtered.empty:
+    settled = df_filtered[df_filtered['outcome'].notna()]
 
     if len(settled) > 0:
         total_profit = settled['profit'].sum()
@@ -116,6 +153,10 @@ if not df_all.empty:
 
         with col4:
             st.metric("Total Bets", f"{len(settled)}")
+
+    # Show strategy filter status
+    if strategy_filter != 'All':
+        st.info(f"📊 Viewing **{strategy_filter}** strategy only. Change filter in sidebar to see all bets.")
 else:
     st.info("No bets found. Start betting to see stats!")
 
@@ -182,7 +223,48 @@ with tab2:
     if df_all.empty:
         st.info("No bets to analyze yet.")
     else:
-        settled = df_all[df_all['outcome'].notna()].copy()
+        # Strategy Breakdown (always show all strategies here)
+        if 'strategy_type' in df_all.columns:
+            st.markdown("#### 🎯 Performance by Strategy")
+
+            settled_all = df_all[df_all['outcome'].notna()].copy()
+
+            if len(settled_all) > 0:
+                # Group by strategy
+                strategy_stats = settled_all.groupby('strategy_type').agg({
+                    'profit': 'sum',
+                    'bet_amount': ['sum', 'count'],
+                    'outcome': lambda x: (x == 'win').sum() / len(x) * 100 if len(x) > 0 else 0
+                }).round(2)
+
+                strategy_stats.columns = ['Profit', 'Wagered', 'Bets', 'Win Rate']
+                strategy_stats['ROI %'] = (strategy_stats['Profit'] / strategy_stats['Wagered'] * 100).round(1)
+
+                # Reorder columns
+                strategy_stats = strategy_stats[['Bets', 'Wagered', 'Profit', 'ROI %', 'Win Rate']]
+
+                # Format for display
+                display_stats = strategy_stats.copy()
+                display_stats['Wagered'] = display_stats['Wagered'].apply(lambda x: f"${x:,.0f}")
+                display_stats['Profit'] = display_stats['Profit'].apply(
+                    lambda x: f"${x:,.2f}" if x >= 0 else f"-${abs(x):,.2f}"
+                )
+                display_stats['Win Rate'] = display_stats['Win Rate'].apply(lambda x: f"{x:.1f}%")
+                display_stats['ROI %'] = display_stats['ROI %'].apply(
+                    lambda x: f"{x:.1f}%" if x >= 0 else f"{x:.1f}%"
+                )
+
+                st.dataframe(display_stats, use_container_width=True)
+
+                # Best performing strategy
+                best_strategy = strategy_stats['ROI %'].idxmax()
+                best_roi = strategy_stats.loc[best_strategy, 'ROI %']
+                st.success(f"🏆 Best performing: **{best_strategy}** ({best_roi:.1f}% ROI)")
+
+            st.markdown("---")
+
+        # Use filtered data for detailed metrics
+        settled = df_filtered[df_filtered['outcome'].notna()].copy()
 
         if len(settled) == 0:
             st.info("No settled bets yet. Check back after games complete.")

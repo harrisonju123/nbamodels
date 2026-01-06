@@ -1,0 +1,58 @@
+{
+  "baseline": {
+    "mode": "baseline",
+    "initial_bankroll": 10000.0,
+    "final_bankroll": 9148.850000000184,
+    "peak_bankroll": 10294.750000000113,
+    "total_profit": -851.1499999999993,
+    "roi": -0.0851149999999816,
+    "roi_pct": -8.51149999999816,
+    "max_drawdown": 0.11130916243715643,
+    "max_drawdown_pct": 11.130916243715642,
+    "total_bets": 500,
+    "win_rate": 0.506,
+    "win_rate_pct": 50.6,
+    "total_wagered": 25000.0,
+    "sharpe_ratio": -0.5287058711799848
+  },
+  "risk_aware": {
+    "mode": "risk_aware",
+    "initial_bankroll": 10000.0,
+    "final_bankroll": 9043.953948086122,
+    "peak_bankroll": 10294.750000000113,
+    "total_profit": -956.0460519140107,
+    "roi": -0.09560460519138778,
+    "roi_pct": -9.560460519138777,
+    "max_drawdown": 0.1214984387104084,
+    "max_drawdown_pct": 12.14984387104084,
+    "total_bets": 500,
+    "win_rate": 0.506,
+    "win_rate_pct": 50.6,
+    "total_wagered": 24295.36105190961,
+    "sharpe_ratio": -0.6213224794015261,
+    "avg_adjustment_factor": 0.9718144420763845,
+    "correlation_reductions": 0,
+    "drawdown_reductions": 118,
+    "final_risk_status": {
+      "current_bankroll": 9043.953948086122,
+      "peak_bankroll": 10294.750000000113,
+      "drawdown": 0.11749111022884484,
+      "drawdown_scale_factor": 0.8250888977115516,
+      "pending_bets": 0,
+      "pending_exposure": 0.0,
+      "daily_wagered": 80.76456852078937,
+      "status": "REDUCED_SIZING"
+    }
+  },
+  "comparison": {
+    "roi_diff": -1.0489605191406177,
+    "roi_improvement_pct": 12.324038291027971,
+    "drawdown_diff": 1.0189276273251977,
+    "drawdown_reduction_pct": -9.15403193246081,
+    "sharpe_diff": -0.09261660822154127,
+    "sharpe_improvement_pct": 17.517605396519652,
+    "bets_diff": 0,
+    "bets_reduction_pct": 0.0,
+    "profit_diff": -104.89605191401142
+  }
+}

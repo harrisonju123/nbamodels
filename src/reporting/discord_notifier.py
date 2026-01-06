@@ -124,6 +124,35 @@ class DiscordNotifier:
             total_profit = total_profit or 0
             total_wagered = total_wagered or 1  # Avoid division by zero
 
+            # Strategy breakdown (last 30 days)
+            strategy_breakdown = []
+            cursor.execute("""
+                SELECT
+                    COALESCE(strategy_type, 'spread') as strategy,
+                    COUNT(*) as bets,
+                    SUM(CASE WHEN outcome = 'win' THEN 1 ELSE 0 END) as wins,
+                    SUM(COALESCE(profit, 0)) as profit,
+                    SUM(bet_amount) as wagered
+                FROM bets
+                WHERE outcome IS NOT NULL
+                  AND DATE(settled_at) >= ?
+                GROUP BY strategy_type
+                ORDER BY profit DESC
+            """, (thirty_days_ago,))
+
+            for row in cursor.fetchall():
+                strategy, bets, wins, profit, wagered = row
+                win_rate = (wins / bets * 100) if bets > 0 else 0
+                roi = (profit / wagered * 100) if wagered > 0 else 0
+                strategy_breakdown.append({
+                    'strategy': strategy,
+                    'bets': bets,
+                    'wins': wins,
+                    'win_rate': win_rate,
+                    'profit': profit,
+                    'roi': roi
+                })
+
             conn.close()
 
             return {
@@ -139,6 +168,7 @@ class DiscordNotifier:
                 'win_rate_30d': (total_wins / total_bets * 100) if total_bets > 0 else 0,
                 'total_profit_30d': total_profit,
                 'roi_30d': (total_profit / total_wagered * 100) if total_wagered > 0 else 0,
+                'strategy_breakdown': strategy_breakdown,
             }
         except Exception as e:
             logger.error(f"Error getting daily stats: {e}")
@@ -163,41 +193,62 @@ class DiscordNotifier:
             color = 0xFFFF00  # Yellow
             emoji = "➖"
 
+        # Build embed fields
+        fields = [
+            {
+                "name": "📊 Today's Activity",
+                "value": (
+                    f"**Bets Placed**: {stats['bets_placed_today']}\n"
+                    f"**Volume**: ${stats['volume_today']:,.2f}\n"
+                    f"**Bets Settled**: {stats['bets_settled_today']}\n"
+                    f"**Wins**: {stats['wins_today']} ({stats['win_rate_today']:.1f}%)"
+                ),
+                "inline": True
+            },
+            {
+                "name": "💰 Today's Results",
+                "value": (
+                    f"**Profit/Loss**: ${profit_today:+,.2f}\n"
+                    f"**Current Bankroll**: ${stats['current_bankroll']:,.2f}"
+                ),
+                "inline": True
+            },
+            {
+                "name": "📈 Last 30 Days",
+                "value": (
+                    f"**Total Bets**: {stats['total_bets_30d']}\n"
+                    f"**Win Rate**: {stats['win_rate_30d']:.1f}%\n"
+                    f"**Total Profit**: ${stats['total_profit_30d']:+,.2f}\n"
+                    f"**ROI**: {stats['roi_30d']:+.1f}%"
+                ),
+                "inline": False
+            }
+        ]
+
+        # Add strategy breakdown if available
+        if stats.get('strategy_breakdown') and len(stats['strategy_breakdown']) > 0:
+            breakdown_text = ""
+            for strategy in stats['strategy_breakdown']:
+                profit_symbol = "+" if strategy['profit'] >= 0 else ""
+                breakdown_text += (
+                    f"**{strategy['strategy'].title()}**: "
+                    f"{strategy['bets']} bets | "
+                    f"{strategy['win_rate']:.1f}% WR | "
+                    f"{profit_symbol}${strategy['profit']:.2f} ({strategy['roi']:+.1f}% ROI)\n"
+                )
+
+            fields.append({
+                "name": "🎯 Performance by Strategy",
+                "value": breakdown_text.strip(),
+                "inline": False
+            })
+
         # Build embed
         embed = {
             "title": f"{emoji} Daily Betting Performance",
             "description": f"Report for {datetime.now().strftime('%B %d, %Y')}",
             "color": color,
-            "fields": [
-                {
-                    "name": "📊 Today's Activity",
-                    "value": (
-                        f"**Bets Placed**: {stats['bets_placed_today']}\n"
-                        f"**Volume**: ${stats['volume_today']:,.2f}\n"
-                        f"**Bets Settled**: {stats['bets_settled_today']}\n"
-                        f"**Wins**: {stats['wins_today']} ({stats['win_rate_today']:.1f}%)"
-                    ),
-                    "inline": True
-                },
-                {
-                    "name": "💰 Today's Results",
-                    "value": (
-                        f"**Profit/Loss**: ${profit_today:+,.2f}\n"
-                        f"**Current Bankroll**: ${stats['current_bankroll']:,.2f}"
-                    ),
-                    "inline": True
-                },
-                {
-                    "name": "📈 Last 30 Days",
-                    "value": (
-                        f"**Total Bets**: {stats['total_bets_30d']}\n"
-                        f"**Win Rate**: {stats['win_rate_30d']:.1f}%\n"
-                        f"**Total Profit**: ${stats['total_profit_30d']:+,.2f}\n"
-                        f"**ROI**: {stats['roi_30d']:+.1f}%"
-                    ),
-                    "inline": False
-                }
-            ],
+            "fields": fields,
             "footer": {
                 "text": "🤖 Generated by NBA Betting System"
             },

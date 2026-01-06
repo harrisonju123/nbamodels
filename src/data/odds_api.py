@@ -278,6 +278,145 @@ class OddsAPIClient:
 
         return best_odds
 
+    def get_player_props(
+        self,
+        event_id: Optional[str] = None,
+        markets: Optional[List[str]] = None,
+        bookmakers: Optional[List[str]] = None,
+    ) -> pd.DataFrame:
+        """
+        Fetch player prop odds for NBA games.
+
+        Note: Player props require specific event IDs and may not be available
+        for all games. The Odds API supports player props on paid plans.
+
+        Args:
+            event_id: Specific event/game ID (optional - fetches all if None)
+            markets: List of prop markets to fetch:
+                - player_points
+                - player_rebounds
+                - player_assists
+                - player_threes (3-pointers made)
+                - player_steals (if available)
+                - player_blocks (if available)
+            bookmakers: List of bookmakers to include
+
+        Returns:
+            DataFrame with player prop odds:
+                - game_id
+                - commence_time
+                - home_team, away_team
+                - bookmaker
+                - market (e.g., "player_points")
+                - player_name
+                - player_id (if available)
+                - prop_type (PTS, REB, AST, 3PM, STL, BLK)
+                - line (over/under line)
+                - side (over/under)
+                - odds (American odds)
+                - last_update
+        """
+        markets = markets or [
+            "player_points",
+            "player_rebounds",
+            "player_assists",
+            "player_threes",
+        ]
+        bookmakers = bookmakers or self.BOOKMAKERS
+
+        params = {
+            "regions": "us",
+            "markets": ",".join(markets),
+            "bookmakers": ",".join(bookmakers),
+            "oddsFormat": "american",
+        }
+
+        try:
+            # If event_id specified, fetch for that event
+            if event_id:
+                endpoint = f"sports/{self.SPORT}/events/{event_id}/odds"
+            else:
+                # Fetch for all upcoming events
+                endpoint = f"sports/{self.SPORT}/odds"
+
+            data = self._make_request(endpoint, params)
+            return self._parse_player_props(data)
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Failed to fetch player props: {e}")
+            return pd.DataFrame()
+
+    def _parse_player_props(self, games: list) -> pd.DataFrame:
+        """Parse raw player prop data into structured DataFrame."""
+        records = []
+
+        # Map market keys to prop types
+        market_to_prop = {
+            "player_points": "PTS",
+            "player_rebounds": "REB",
+            "player_assists": "AST",
+            "player_threes": "3PM",
+            "player_steals": "STL",
+            "player_blocks": "BLK",
+        }
+
+        for game in games:
+            game_id = game["id"]
+            commence_time = game["commence_time"]
+            home_team = game["home_team"]
+            away_team = game["away_team"]
+
+            for bookmaker in game.get("bookmakers", []):
+                book_name = bookmaker["key"]
+                last_update = bookmaker["last_update"]
+
+                for market in bookmaker.get("markets", []):
+                    market_key = market["key"]
+
+                    # Only process player prop markets
+                    if market_key not in market_to_prop:
+                        continue
+
+                    prop_type = market_to_prop[market_key]
+
+                    # Player props have outcomes with player names and over/under
+                    for outcome in market["outcomes"]:
+                        player_name = outcome.get("description", outcome.get("name"))
+
+                        # Extract player team if available
+                        player_team = None
+                        if "description" in outcome:
+                            # Format may be "Player Name (TEAM)"
+                            if "(" in player_name and ")" in player_name:
+                                parts = player_name.rsplit("(", 1)
+                                player_name = parts[0].strip()
+                                player_team = parts[1].rstrip(")").strip()
+
+                        records.append({
+                            "game_id": game_id,
+                            "commence_time": commence_time,
+                            "home_team": home_team,
+                            "away_team": away_team,
+                            "bookmaker": book_name,
+                            "market": market_key,
+                            "prop_type": prop_type,
+                            "player_name": player_name,
+                            "player_team": player_team,
+                            "player_id": outcome.get("player_id"),  # May not always be available
+                            "side": outcome.get("name", "").lower(),  # "over" or "under"
+                            "line": outcome.get("point"),
+                            "odds": outcome["price"],
+                            "last_update": last_update,
+                        })
+
+        df = pd.DataFrame(records)
+        if not df.empty:
+            df["commence_time"] = pd.to_datetime(df["commence_time"])
+            df["last_update"] = pd.to_datetime(df["last_update"])
+            df["implied_prob"] = df["odds"].apply(self._american_to_implied_prob)
+
+        return df
+
     def calculate_no_vig_odds(self, odds_df: pd.DataFrame) -> pd.DataFrame:
         """
         Calculate no-vig (fair) probabilities by removing bookmaker margin.

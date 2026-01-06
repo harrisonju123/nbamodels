@@ -192,6 +192,21 @@ def _get_connection() -> sqlite3.Connection:
     if "snapshot_coverage" not in columns:
         conn.execute("ALTER TABLE bets ADD COLUMN snapshot_coverage REAL")
 
+    # Multi-strategy framework columns
+    if "strategy_type" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN strategy_type TEXT")
+    if "player_id" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN player_id TEXT")
+    if "player_name" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN player_name TEXT")
+    if "prop_type" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN prop_type TEXT")
+
+    # Add index for strategy queries
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_bets_strategy ON bets(strategy_type)
+    """)
+
     conn.commit()
     return conn
 
@@ -201,7 +216,7 @@ def log_bet(
     home_team: str,
     away_team: str,
     commence_time: str,
-    bet_type: str,  # 'moneyline', 'spread', 'totals'
+    bet_type: str,  # 'moneyline', 'spread', 'totals', 'player_prop'
     bet_side: str,  # 'home', 'away', 'over', 'under', 'cover'
     odds: float,
     line: Optional[float],  # spread line or total line
@@ -210,10 +225,20 @@ def log_bet(
     edge: float,
     kelly: float,
     bookmaker: str = None,
-    bet_amount: Optional[float] = None,  # NEW: Allow passing bet amount
+    bet_amount: Optional[float] = None,
+    strategy_type: Optional[str] = None,  # NEW: Strategy that generated the bet
+    player_id: Optional[str] = None,  # NEW: For player props
+    player_name: Optional[str] = None,  # NEW: For player props
+    prop_type: Optional[str] = None,  # NEW: For player props (PTS, REB, AST, etc.)
 ) -> Dict:
     """
     Log a new bet recommendation.
+
+    Args:
+        strategy_type: Strategy that generated bet (spread, totals, live, arbitrage, player_props)
+        player_id: Player ID for prop bets
+        player_name: Player name for prop bets
+        prop_type: Prop type for player props (PTS, REB, AST, 3PM, STL, BLK)
 
     Returns the logged bet record.
     """
@@ -250,12 +275,14 @@ def log_bet(
         INSERT OR IGNORE INTO bets (
             id, game_id, home_team, away_team, commence_time,
             bet_type, bet_side, odds, line, model_prob, market_prob,
-            edge, kelly, bookmaker, logged_at, bet_amount
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            edge, kelly, bookmaker, logged_at, bet_amount,
+            strategy_type, player_id, player_name, prop_type
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         bet_id, game_id, home_team, away_team, str(commence_time),
         bet_type, bet_side, odds, line, model_prob, market_prob,
-        edge, kelly_pct, bookmaker, logged_at, bet_amount
+        edge, kelly_pct, bookmaker, logged_at, bet_amount,
+        strategy_type, player_id, player_name, prop_type
     ))
 
     conn.commit()

@@ -101,16 +101,22 @@ def get_todays_games() -> pd.DataFrame:
         with open(model_path, "rb") as f:
             model_data = pickle.load(f)
 
-        # Validate loaded data structure
-        if not isinstance(model_data, dict):
-            raise ValueError(f"Invalid model file structure - expected dict, got {type(model_data)}")
-        if 'model' not in model_data:
-            raise ValueError("Model file missing 'model' key")
-        if 'feature_columns' not in model_data:
-            raise ValueError("Model file missing 'feature_columns' key")
+        # Handle both dict format and DualPredictionModel format
+        if isinstance(model_data, dict):
+            # Dict format: {'model': ..., 'feature_columns': ...}
+            if 'model' not in model_data:
+                raise ValueError("Model file missing 'model' key")
+            if 'feature_columns' not in model_data:
+                raise ValueError("Model file missing 'feature_columns' key")
+            model = model_data["model"]
+            feature_cols = model_data["feature_columns"]
+        elif hasattr(model_data, 'feature_columns'):
+            # DualPredictionModel format
+            model = model_data
+            feature_cols = model_data.feature_columns
+        else:
+            raise ValueError(f"Invalid model file structure - got {type(model_data)}")
 
-        model = model_data["model"]
-        feature_cols = model_data["feature_columns"]
         logger.info(f"Loaded model with {len(feature_cols)} features")
 
     except (FileNotFoundError, ValueError, pickle.UnpicklingError) as e:

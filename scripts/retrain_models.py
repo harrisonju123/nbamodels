@@ -15,7 +15,7 @@ import os
 import argparse
 import pickle
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from pathlib import Path
 from typing import Optional, Dict, Any, Tuple
 import json
@@ -27,6 +27,13 @@ import numpy as np
 
 from dotenv import load_dotenv
 load_dotenv('.env')
+
+# Import versioning system
+from src.versioning import (
+    ModelRegistry, ModelMetrics, Version,
+    get_next_version, format_model_filename, BumpType,
+    ChampionChallengerFramework
+)
 
 # Configure logging
 logging.basicConfig(
@@ -54,13 +61,19 @@ class RetrainingPipeline:
     # Training metadata file
     METADATA_FILE = Path("models/training_metadata.json")
 
-    def __init__(self, dry_run: bool = False):
+    def __init__(self, dry_run: bool = False, use_versioning: bool = True):
         self.dry_run = dry_run
+        self.use_versioning = use_versioning
         self.metadata = self._load_metadata()
 
         # Ensure directories exist
         self.BACKUP_DIR.mkdir(parents=True, exist_ok=True)
         Path("logs").mkdir(exist_ok=True)
+
+        # Initialize versioning system if enabled
+        if self.use_versioning:
+            self.registry = ModelRegistry()
+            self.champion_challenger = ChampionChallengerFramework(self.registry)
 
     def _load_metadata(self) -> Dict[str, Any]:
         """Load training metadata."""
@@ -214,7 +227,11 @@ class RetrainingPipeline:
 
         return backup_subdir
 
-    def train_model(self, model_name: str) -> Tuple[bool, Dict[str, Any]]:
+    def train_model(
+        self,
+        model_name: str,
+        description: str = "Automatic retraining"
+    ) -> Tuple[bool, Dict[str, Any]]:
         """
         Train a specific model and return metrics.
 
@@ -249,6 +266,11 @@ class RetrainingPipeline:
                 return False, {}
 
             logger.info(f"Successfully trained {model_name}")
+
+            # Register model with versioning system if enabled
+            if self.use_versioning and metrics:
+                self._register_trained_model(model_name, description, metrics)
+
             return True, metrics if metrics else {}
 
         except Exception as e:
@@ -256,6 +278,68 @@ class RetrainingPipeline:
             import traceback
             traceback.print_exc()
             return False, {"error": str(e)}
+
+    def _register_trained_model(
+        self,
+        model_name: str,
+        description: str,
+        metrics: Dict[str, Any]
+    ) -> None:
+        """Register newly trained model in the versioning system."""
+        try:
+            # Get current champion version
+            champion = self.registry.get_champion(model_name)
+            parent_version = champion.version if champion else None
+
+            # Determine next version
+            next_version = get_next_version(
+                parent_version,
+                bump_type=BumpType.PATCH,  # Default to patch for retraining
+                description=description
+            )
+
+            # Get training data info
+            games = pd.read_parquet(self.DATA_DIR / "raw" / "games.parquet")
+
+            # Create versioned model path
+            model_path = self.MODEL_DIR / format_model_filename(model_name, next_version)
+            metadata_path = self.MODEL_DIR / f"{model_name}.metadata.json"
+
+            # Move the trained model to versioned path
+            original_path = self.MODEL_DIR / f"{model_name}.pkl"
+            if original_path.exists():
+                import shutil
+                shutil.copy2(original_path, model_path)
+
+            # Create ModelMetrics from training metrics
+            model_metrics = ModelMetrics(
+                accuracy=metrics.get('accuracy'),
+                auc_roc=metrics.get('auc'),
+                log_loss=metrics.get('log_loss'),
+                calibration_error=metrics.get('calibration_error')
+            )
+
+            # Register model as challenger
+            model_id = self.registry.register_model(
+                model_name=model_name,
+                version=str(next_version),
+                model_path=str(model_path),
+                description=description,
+                parent_version=parent_version,
+                metrics=model_metrics,
+                status="challenger",
+                metadata_path=str(metadata_path) if metadata_path.exists() else None,
+                train_end_date=date.today(),
+                games_count=len(games),
+                feature_count=metrics.get('n_features')
+            )
+
+            logger.info(f"Registered {model_name} v{next_version} as challenger (ID: {model_id})")
+
+        except Exception as e:
+            logger.error(f"Failed to register model: {e}")
+            import traceback
+            traceback.print_exc()
 
     def validate_model(self, model_name: str, old_model_path: Path) -> Tuple[bool, str]:
         """
@@ -301,12 +385,13 @@ class RetrainingPipeline:
         except Exception as e:
             return False, f"Validation error: {e}"
 
-    def run(self, force: bool = False) -> bool:
+    def run(self, force: bool = False, auto_promote: bool = True) -> bool:
         """
         Run the full retraining pipeline.
 
         Args:
             force: Force retraining regardless of new data
+            auto_promote: Automatically promote challengers if they outperform
 
         Returns:
             True if successful
@@ -315,6 +400,7 @@ class RetrainingPipeline:
         logger.info("Starting Model Retraining Pipeline")
         logger.info(f"Timestamp: {datetime.now()}")
         logger.info(f"Mode: {'DRY RUN' if self.dry_run else 'LIVE'}")
+        logger.info(f"Versioning: {'ENABLED' if self.use_versioning else 'DISABLED'}")
         logger.info("=" * 60)
 
         # Step 1: Check for new data
@@ -382,6 +468,30 @@ class RetrainingPipeline:
             self.metadata["models"] = results
             self._save_metadata()
 
+        # Step 7: Run auto-promotion if enabled and versioning is on
+        if all_success and self.use_versioning and auto_promote and not self.dry_run:
+            logger.info("=" * 60)
+            logger.info("Running Auto-Promotion Checks")
+            logger.info("=" * 60)
+
+            for model_name in models_to_train:
+                try:
+                    logger.info(f"Checking {model_name} for auto-promotion...")
+                    comparison = self.champion_challenger.auto_promote_if_better(model_name)
+
+                    if comparison:
+                        if comparison.recommendation == "promote":
+                            logger.info(f"✓ {model_name} promoted to champion")
+                        elif comparison.recommendation == "reject":
+                            logger.info(f"✗ {model_name} not promoted: {comparison.reason}")
+                        else:
+                            logger.info(f"⚠ {model_name} needs more data")
+                    else:
+                        logger.info(f"  No challengers to compare for {model_name}")
+
+                except Exception as e:
+                    logger.error(f"Auto-promotion failed for {model_name}: {e}")
+
         # Summary
         logger.info("=" * 60)
         logger.info("Retraining Pipeline Complete")
@@ -389,6 +499,16 @@ class RetrainingPipeline:
         for model_name, result in results.items():
             status = "OK" if result.get("success") and result.get("valid", True) else "FAILED"
             logger.info(f"  {model_name}: {status}")
+
+        if self.use_versioning:
+            logger.info("")
+            logger.info("Model Versions:")
+            for model_name in models_to_train:
+                champion = self.registry.get_champion(model_name)
+                if champion:
+                    logger.info(f"  {model_name}: v{champion.version} (champion)")
+                else:
+                    logger.info(f"  {model_name}: No champion yet")
 
         return all_success
 
@@ -398,14 +518,22 @@ def main():
     parser.add_argument("--force", action="store_true", help="Force retrain all models")
     parser.add_argument("--dry-run", action="store_true", help="Show what would happen without making changes")
     parser.add_argument("--fetch-only", action="store_true", help="Only fetch new data, don't retrain")
+    parser.add_argument("--no-versioning", action="store_true", help="Disable versioning system (legacy mode)")
+    parser.add_argument("--no-auto-promote", action="store_true", help="Disable auto-promotion of challengers")
     args = parser.parse_args()
 
-    pipeline = RetrainingPipeline(dry_run=args.dry_run)
+    pipeline = RetrainingPipeline(
+        dry_run=args.dry_run,
+        use_versioning=not args.no_versioning
+    )
 
     if args.fetch_only:
         pipeline.fetch_new_data()
     else:
-        success = pipeline.run(force=args.force)
+        success = pipeline.run(
+            force=args.force,
+            auto_promote=not args.no_auto_promote
+        )
         sys.exit(0 if success else 1)
 
 

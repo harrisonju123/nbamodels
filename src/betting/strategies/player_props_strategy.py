@@ -372,6 +372,8 @@ class PlayerPropsStrategy(BettingStrategy):
         Args:
             games_df: DataFrame with game_id, home_team, away_team
             features_df: DataFrame with player features (player_id, player_name, prop features)
+                NOTE: Currently receives game-level features, not player features
+                TODO: Build player features from box scores cache
             odds_df: DataFrame with player prop odds (from OddsAPIClient.get_player_props()):
                 - game_id
                 - player_name, player_id, player_team
@@ -388,6 +390,16 @@ class PlayerPropsStrategy(BettingStrategy):
 
         if not self.models:
             logger.warning("No models loaded, cannot evaluate props")
+            return all_signals
+
+        # Check if features_df has player-level features
+        if 'player_name' not in features_df.columns:
+            logger.warning(
+                "Player props strategy requires player-level features. "
+                "features_df contains game-level features only. "
+                "Skipping props evaluation. "
+                "TODO: Build player features from box scores cache."
+            )
             return all_signals
 
         # Merge odds with games to get team info

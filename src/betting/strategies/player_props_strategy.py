@@ -152,7 +152,7 @@ class PlayerPropsStrategy(BettingStrategy):
         """
         # 1. Check confirmed lineup
         try:
-            lineups = self.lineup_client.get_lineup_for_game(game_id)
+            lineups = self.lineup_client.get_lineups(game_id=game_id)
 
             if lineups is not None and not lineups.empty:
                 player_lineup = lineups[

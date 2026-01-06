@@ -340,6 +340,12 @@ class OddsAPIClient:
                 endpoint = f"sports/{self.SPORT}/odds"
 
             data = self._make_request(endpoint, params)
+
+            # API returns single game dict for specific event, list for all events
+            # Normalize to always be a list
+            if isinstance(data, dict):
+                data = [data]
+
             return self._parse_player_props(data)
 
         except requests.exceptions.RequestException as e:
@@ -349,6 +355,11 @@ class OddsAPIClient:
     def _parse_player_props(self, games: list) -> pd.DataFrame:
         """Parse raw player prop data into structured DataFrame."""
         records = []
+
+        # Handle empty or invalid input
+        if not games or not isinstance(games, list):
+            logger.debug("No games data to parse for player props")
+            return pd.DataFrame()
 
         # Map market keys to prop types
         market_to_prop = {
@@ -361,17 +372,32 @@ class OddsAPIClient:
         }
 
         for game in games:
-            game_id = game["id"]
-            commence_time = game["commence_time"]
-            home_team = game["home_team"]
-            away_team = game["away_team"]
+            # Skip invalid game entries
+            if not isinstance(game, dict):
+                logger.warning(f"Invalid game data type: {type(game)}")
+                continue
+
+            try:
+                game_id = game["id"]
+                commence_time = game["commence_time"]
+                home_team = game["home_team"]
+                away_team = game["away_team"]
+            except KeyError as e:
+                logger.warning(f"Missing required field in game data: {e}")
+                continue
 
             for bookmaker in game.get("bookmakers", []):
-                book_name = bookmaker["key"]
-                last_update = bookmaker["last_update"]
+                try:
+                    book_name = bookmaker.get("key", "unknown")
+                    last_update = bookmaker.get("last_update")
+                except Exception as e:
+                    logger.debug(f"Error parsing bookmaker data: {e}")
+                    continue
 
                 for market in bookmaker.get("markets", []):
-                    market_key = market["key"]
+                    market_key = market.get("key")
+                    if not market_key:
+                        continue
 
                     # Only process player prop markets
                     if market_key not in market_to_prop:

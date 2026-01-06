@@ -66,14 +66,14 @@ strategies:
 
   # Player Props
   props:
-    enabled: true   # ENABLED - models trained successfully
+    enabled: true   # ENABLED - production models trained on full dataset
     min_edge: 0.05
     prop_types:
       - PTS    # Points
       - REB    # Rebounds
       - AST    # Assists
       - 3PM    # Three-pointers made
-    models_dir: "models/player_props"
+    models_dir: "models/player_props_production/latest_converted"  # Production models (converted format)
 
     # Safety filters (lineup/injury protection)
     require_starter: true        # Only bet on confirmed starters

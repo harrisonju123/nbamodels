@@ -14,10 +14,10 @@ global:
 allocation:
   totals: 0.00     # DISABLED - not profitable (+0.9% ROI)
   live: 0.00       # DISABLED - not tested
-  arbitrage: 0.15  # 15% allocation (VALIDATED: 10.93% avg profit, 36 arbs found)
+  arbitrage: 0.25  # 25% allocation (VALIDATED: 10.93% avg profit, 36 arbs in 57 days)
   props: 0.10      # 10% allocation - player props models trained
   b2b_rest: 0.15   # 15% allocation (VALIDATED: +8.7% ROI, 57% WR)
-  spread: 0.60     # 60% for spread betting (VALIDATED: +23.6% ROI)
+  spread: 0.50     # 50% for spread betting (VALIDATED: +23.6% ROI)
 
 # Per-Strategy Daily Limits
 # Maximum number of bets per strategy per day

@@ -14,10 +14,10 @@ global:
 allocation:
   totals: 0.00     # DISABLED - not profitable (+0.9% ROI)
   live: 0.00       # DISABLED - not tested
-  arbitrage: 0.20  # 20% allocation (VALIDATED: 10.93% avg profit, 36 arbs found)
-  props: 0.00      # DISABLED - models not trained
+  arbitrage: 0.15  # 15% allocation (VALIDATED: 10.93% avg profit, 36 arbs found)
+  props: 0.10      # 10% allocation - player props models trained
   b2b_rest: 0.15   # 15% allocation (VALIDATED: +8.7% ROI, 57% WR)
-  spread: 0.65     # 65% for spread betting (VALIDATED: +23.6% ROI)
+  spread: 0.60     # 60% for spread betting (VALIDATED: +23.6% ROI)
 
 # Per-Strategy Daily Limits
 # Maximum number of bets per strategy per day
@@ -25,7 +25,7 @@ daily_limits:
   totals: 0       # DISABLED
   live: 0         # DISABLED
   arbitrage: 5    # Max 5 arbitrage bets per day
-  props: 0        # DISABLED
+  props: 5        # Max 5 player props bets per day
   b2b_rest: 5     # Max 5 B2B rest bets per day
   spread: 10      # Increased for spread-only strategy
 
@@ -66,7 +66,7 @@ strategies:
 
   # Player Props
   props:
-    enabled: false  # Disabled until models are trained
+    enabled: true   # ENABLED - models trained successfully
     min_edge: 0.05
     prop_types:
       - PTS    # Points
@@ -74,6 +74,10 @@ strategies:
       - AST    # Assists
       - 3PM    # Three-pointers made
     models_dir: "models/player_props"
+
+    # Safety filters (lineup/injury protection)
+    require_starter: true        # Only bet on confirmed starters
+    skip_questionable: true      # Skip players with injury designation (Q, D)
 
   # B2B Rest Advantage
   b2b_rest:

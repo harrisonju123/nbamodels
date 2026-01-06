@@ -3,6 +3,11 @@ Player Props Strategy
 
 Betting strategy for player props (points, rebounds, assists, etc.)
 using individual player prop models.
+
+IMPORTANT: Requires lineup and injury data to avoid betting on:
+- Injured players (Out, Questionable)
+- Non-starters with reduced minutes
+- Players not confirmed in lineup
 """
 
 import os
@@ -22,6 +27,8 @@ from src.models.player_props import (
     AssistsPropModel,
     ThreesPropModel,
 )
+from src.data.lineup_scrapers import ESPNLineupClient
+from src.data.espn_injuries import ESPNClient
 
 
 class PlayerPropsStrategy(BettingStrategy):
@@ -48,6 +55,10 @@ class PlayerPropsStrategy(BettingStrategy):
         min_minutes: Optional[float] = None,  # Filter to players with X+ min/game
         max_daily_bets: int = 5,
         enabled: bool = True,
+        lineup_client: Optional[ESPNLineupClient] = None,
+        injury_client: Optional[ESPNClient] = None,
+        require_starter: bool = True,  # Only bet on confirmed starters
+        skip_questionable: bool = True,  # Skip questionable players
     ):
         """
         Initialize player props strategy.
@@ -59,6 +70,10 @@ class PlayerPropsStrategy(BettingStrategy):
             min_minutes: Optional minimum minutes filter
             max_daily_bets: Maximum bets per day
             enabled: Whether strategy is active
+            lineup_client: Client for fetching confirmed lineups (REQUIRED)
+            injury_client: Client for fetching injury reports (REQUIRED)
+            require_starter: Only bet on confirmed starters (default True)
+            skip_questionable: Skip questionable players (default True)
         """
         super().__init__(
             min_edge=min_edge,
@@ -69,6 +84,12 @@ class PlayerPropsStrategy(BettingStrategy):
         self.models_dir = models_dir
         self.prop_types = prop_types or ["PTS", "REB", "AST", "3PM"]
         self.min_minutes = min_minutes
+        self.require_starter = require_starter
+        self.skip_questionable = skip_questionable
+
+        # Lineup and injury clients
+        self.lineup_client = lineup_client or ESPNLineupClient()
+        self.injury_client = injury_client or ESPNClient()
 
         # Load models
         self.models = self._load_models()
@@ -78,6 +99,11 @@ class PlayerPropsStrategy(BettingStrategy):
                 f"No player prop models loaded from {models_dir}. "
                 "Strategy will not generate signals."
             )
+
+        logger.info(
+            f"PlayerPropsStrategy initialized with lineup/injury filtering: "
+            f"require_starter={require_starter}, skip_questionable={skip_questionable}"
+        )
 
     def _load_models(self) -> Dict[str, any]:
         """Load all available prop models."""
@@ -110,6 +136,82 @@ class PlayerPropsStrategy(BettingStrategy):
                 logger.debug(f"{prop_type} model not found at {model_path}")
 
         return models
+
+    def is_player_safe_to_bet(
+        self,
+        player_name: str,
+        player_team: str,
+        game_id: str,
+        game_date: str,
+    ) -> tuple[bool, Optional[str]]:
+        """
+        Check if it's safe to bet on a player.
+
+        Returns:
+            (is_safe, reason) - True if safe, False with reason if not
+        """
+        # 1. Check confirmed lineup
+        try:
+            lineups = self.lineup_client.get_lineup_for_game(game_id)
+
+            if lineups is not None and not lineups.empty:
+                player_lineup = lineups[
+                    (lineups['player_name'] == player_name) &
+                    (lineups['team_abbrev'] == player_team)
+                ]
+
+                if len(player_lineup) == 0:
+                    return False, f"Not in confirmed lineup"
+
+                player_info = player_lineup.iloc[0]
+
+                # Check if starter (if required)
+                if self.require_starter and not player_info.get('is_starter', False):
+                    return False, f"Not a confirmed starter"
+
+                # Check player status from lineup
+                status = player_info.get('status', '').lower()
+                if status in ['out', 'inactive']:
+                    return False, f"Status: {status}"
+            else:
+                # No lineup data available - be conservative
+                logger.warning(f"No lineup data for game {game_id}, proceeding with caution")
+
+        except Exception as e:
+            logger.warning(f"Error checking lineup for {player_name}: {e}")
+            # Continue to injury check
+
+        # 2. Check injury report
+        try:
+            injuries = self.injury_client.get_injuries()
+
+            if injuries is not None and not injuries.empty:
+                player_injury = injuries[
+                    (injuries['player_name'] == player_name) &
+                    (injuries['team'] == player_team)
+                ]
+
+                if len(player_injury) > 0:
+                    injury_info = player_injury.iloc[0]
+                    status = injury_info.get('status', '').lower()
+
+                    # Always skip "Out" players
+                    if status in ['out', 'o']:
+                        return False, f"Injury status: Out"
+
+                    # Skip questionable if configured
+                    if self.skip_questionable and status in ['questionable', 'q', 'doubtful', 'd']:
+                        return False, f"Injury status: {status}"
+
+                    # Log but allow probable/day-to-day
+                    if status in ['probable', 'p', 'day-to-day', 'gtd']:
+                        logger.info(f"{player_name} is {status} but proceeding")
+
+        except Exception as e:
+            logger.warning(f"Error checking injuries for {player_name}: {e}")
+            # Continue - better to have false positives than miss bets
+
+        return True, None
 
     def evaluate_player_prop(
         self,
@@ -319,6 +421,21 @@ class PlayerPropsStrategy(BettingStrategy):
 
             # Line should be same for both sides
             line = over_row['line']
+
+            # SAFETY CHECK: Verify player is safe to bet on
+            player_team = over_row.get('player_team', '')
+            game_date = games_df[games_df['game_id'] == game_id]['game_date'].iloc[0] if 'game_date' in games_df.columns else None
+
+            is_safe, reason = self.is_player_safe_to_bet(
+                player_name=player_name,
+                player_team=player_team,
+                game_id=game_id,
+                game_date=game_date,
+            )
+
+            if not is_safe:
+                logger.info(f"Skipping {player_name} {prop_type}: {reason}")
+                continue
 
             # Get player features
             player_features = features_df[

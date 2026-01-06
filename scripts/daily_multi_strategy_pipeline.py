@@ -55,6 +55,10 @@ from src.betting.strategies.b2b_rest_strategy import B2BRestStrategy
 # Legacy spread strategy (wraps existing EdgeStrategy)
 from src.betting.edge_strategy import EdgeStrategy
 
+# Lineup and injury data for player props safety
+from src.data.lineup_scrapers import ESPNLineupClient
+from src.data.espn_injuries import ESPNClient
+
 # Risk management
 from src.risk import RiskConfig, ExposureManager
 from src.betting.kelly import KellyBetSizer
@@ -267,13 +271,38 @@ def create_orchestrator(config: 'MultiStrategyConfig', bankroll: float) -> Strat
     # Player Props Strategy
     if 'props' in enabled:
         props_config = config.strategies['props']
+
+        # Initialize lineup and injury clients for safety filtering
+        lineup_client = ESPNLineupClient()
+        injury_client = ESPNClient()
+
+        # Fetch latest lineups and injuries
+        logger.info("  Fetching lineups and injury reports for player props safety...")
+        try:
+            # This will cache lineup data in the database
+            lineup_client.collect_today_lineups()
+            logger.info("  ✓ Lineups fetched")
+        except Exception as e:
+            logger.warning(f"  Could not fetch lineups: {e}")
+
+        try:
+            # This will fetch current injury report
+            injuries = injury_client.get_injuries()
+            logger.info(f"  ✓ Injury report fetched ({len(injuries)} players)")
+        except Exception as e:
+            logger.warning(f"  Could not fetch injuries: {e}")
+
         strategies.append(
             PlayerPropsStrategy(
                 models_dir=props_config.get('models_dir', "models/player_props"),
                 min_edge=props_config.get('min_edge', 0.05),
+                lineup_client=lineup_client,
+                injury_client=injury_client,
+                require_starter=props_config.get('require_starter', True),
+                skip_questionable=props_config.get('skip_questionable', True),
             )
         )
-        logger.info("✓ Enabled PlayerPropsStrategy")
+        logger.info("✓ Enabled PlayerPropsStrategy with lineup/injury filtering")
 
     # B2B Rest Advantage Strategy
     if 'b2b_rest' in enabled:

@@ -1,13 +1,6 @@
 """Betting and backtesting utilities."""
 
-from .backtest import KellyBacktester, BacktestResult
 from .kelly import KellyBetSizer, UncertaintyAdjustedBet
-from .realistic_backtest import (
-    RealisticKellyBacktester,
-    RealisticBacktestResult,
-    MarketSimulator,
-    run_realistic_backtest,
-)
 from .dual_model_backtest import (
     DualModelATSBacktester,
     DualModelBacktestResult,
@@ -25,14 +18,8 @@ from .edge_strategy import (
 )
 
 __all__ = [
-    "KellyBacktester",
-    "BacktestResult",
     "KellyBetSizer",
     "UncertaintyAdjustedBet",
-    "RealisticKellyBacktester",
-    "RealisticBacktestResult",
-    "MarketSimulator",
-    "run_realistic_backtest",
     "DualModelATSBacktester",
     "DualModelBacktestResult",
     "ATSBet",

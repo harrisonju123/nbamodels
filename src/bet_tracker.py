@@ -207,6 +207,115 @@ def _get_connection() -> sqlite3.Connection:
         CREATE INDEX IF NOT EXISTS idx_bets_strategy ON bets(strategy_type)
     """)
 
+    # Market analysis columns
+    if "sharp_aligned" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN sharp_aligned BOOLEAN")
+    if "steam_detected" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN steam_detected BOOLEAN")
+    if "rlm_detected" not in columns:
+        conn.execute("ALTER TABLE bets ADD COLUMN rlm_detected BOOLEAN")
+
+    # Create calibration_snapshots table for model drift monitoring
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS calibration_snapshots (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            snapshot_date TEXT NOT NULL,
+            model_type TEXT,
+            strategy_type TEXT,
+            brier_score REAL,
+            log_loss REAL,
+            ece REAL,
+            mce REAL,
+            accuracy REAL,
+            n_samples INTEGER,
+            prob_bucket_stats TEXT,
+            UNIQUE(snapshot_date, model_type, strategy_type)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_calibration_date ON calibration_snapshots(snapshot_date DESC)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_calibration_model ON calibration_snapshots(model_type, strategy_type)
+    """)
+
+    # Create backtest_results table for performance gap analysis
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS backtest_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            run_id TEXT NOT NULL,
+            run_date TEXT NOT NULL,
+            strategy_type TEXT,
+            start_date TEXT,
+            end_date TEXT,
+            total_bets INTEGER,
+            win_rate REAL,
+            roi REAL,
+            total_profit REAL,
+            sharpe_ratio REAL,
+            max_drawdown REAL,
+            avg_edge REAL,
+            parameters TEXT,
+            UNIQUE(run_id)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_backtest_strategy ON backtest_results(strategy_type)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_backtest_date ON backtest_results(run_date DESC)
+    """)
+
+    # Create edge_decay_tracking table for market efficiency analysis
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS edge_decay_tracking (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            bet_type TEXT NOT NULL,
+            bet_side TEXT NOT NULL,
+            initial_edge REAL,
+            initial_edge_time TEXT,
+            edge_at_1hr REAL,
+            edge_at_4hr REAL,
+            edge_at_12hr REAL,
+            closing_edge REAL,
+            time_to_half_edge_hrs REAL,
+            time_to_zero_edge_hrs REAL,
+            was_correct_side BOOLEAN,
+            created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(game_id, bet_type, bet_side)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_edge_decay_game ON edge_decay_tracking(game_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_edge_decay_type ON edge_decay_tracking(bet_type)
+    """)
+
+    # Create sharp_divergences table for sharp vs public analysis
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS sharp_divergences (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            game_id TEXT NOT NULL,
+            snapshot_time TEXT NOT NULL,
+            bet_type TEXT NOT NULL,
+            pinnacle_line REAL,
+            pinnacle_odds INTEGER,
+            retail_consensus_line REAL,
+            retail_consensus_odds INTEGER,
+            divergence REAL,
+            sharp_side TEXT,
+            UNIQUE(game_id, snapshot_time, bet_type)
+        )
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sharp_div_game ON sharp_divergences(game_id)
+    """)
+    conn.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sharp_div_time ON sharp_divergences(snapshot_time DESC)
+    """)
+
     conn.commit()
     return conn
 
@@ -2097,6 +2206,68 @@ def american_to_prob(odds: float) -> float:
     Convert American odds to implied probability (includes vig).
     """
     return american_to_implied_prob(odds)
+
+
+def forecast_clv(
+    game_id: str,
+    bet_type: str,
+    bet_side: str,
+    current_line: Optional[float] = None,
+) -> float:
+    """
+    Forecast expected CLV for a bet based on historical patterns.
+
+    Uses historical CLV data for similar bets to predict likely CLV
+    if bet is placed now.
+
+    Args:
+        game_id: Game ID
+        bet_type: Bet type (spread, totals, moneyline)
+        bet_side: Bet side (home, away, over, under)
+        current_line: Current betting line (optional)
+
+    Returns:
+        Forecasted CLV (positive = expected to beat closing line)
+    """
+    conn = _get_connection()
+
+    # Get historical CLV for similar bets
+    # Filter by bet type and similar time before game
+    query = """
+        SELECT AVG(clv) as avg_clv
+        FROM bets
+        WHERE bet_type = ?
+            AND clv IS NOT NULL
+            AND outcome IS NOT NULL
+        LIMIT 100
+    """
+
+    result = conn.execute(query, (bet_type,)).fetchone()
+
+    if result and result['avg_clv'] is not None:
+        base_forecast = result['avg_clv']
+    else:
+        base_forecast = 0.0
+
+    # Adjust based on sharp alignment if available
+    sharp_query = """
+        SELECT divergence
+        FROM sharp_divergences
+        WHERE game_id = ? AND bet_type = ?
+        ORDER BY snapshot_time DESC
+        LIMIT 1
+    """
+
+    sharp_result = conn.execute(sharp_query, (game_id, bet_type)).fetchone()
+
+    if sharp_result and sharp_result['divergence']:
+        # Sharp divergence suggests potential CLV improvement
+        sharp_adjustment = sharp_result['divergence'] * 0.003  # 0.3% per point
+        base_forecast += sharp_adjustment
+
+    conn.close()
+
+    return float(base_forecast)
 
 
 if __name__ == "__main__":

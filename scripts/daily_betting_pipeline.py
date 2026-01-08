@@ -54,6 +54,10 @@ from src.risk import (
 )
 from src.betting.kelly import KellyBetSizer
 
+# Market Analysis Integration
+from src.market_analysis.bet_timing_advisor import BetTimingAdvisor
+from src.market_analysis.timing_analysis import HistoricalTimingAnalyzer
+
 
 # Paper trading flag (global)
 PAPER_TRADING = True
@@ -271,7 +275,13 @@ def get_todays_games() -> pd.DataFrame:
             features_df[col] = 0  # Fill missing features with 0
 
         X = features_df[feature_cols].fillna(0)
-        features_df['pred_diff'] = model.predict(X)
+
+        # XGBClassifier uses predict_proba to get win probabilities
+        # Convert probability to implied spread: spread = -(p - 0.5) * 28
+        # (Based on standard NFL/NBA spread-to-probability conversion: 1 point ≈ 3.6% win prob)
+        probs = model.predict_proba(X)[:, 1]  # Home team win probability
+        # Convert to spread (home team perspective, positive = home favored)
+        features_df['pred_diff'] = -(probs - 0.5) * 28
 
         # Extract required columns
         games_df = features_df[[
@@ -765,6 +775,7 @@ def main():
     parser.add_argument('--strategy', type=str, default='clv_filtered',
                        choices=['baseline', 'clv_filtered', 'optimal_timing', 'team_filtered'],
                        help='Strategy to use (default: clv_filtered)')
+    parser.add_argument('--use-timing', action='store_true', help='Use timing advisor to optimize bet placement')
     args = parser.parse_args()
 
     # Set paper trading mode
@@ -909,6 +920,60 @@ def main():
             logger.info("❌ Pipeline stopped due to circuit breaker")
             logger.info("=" * 80)
             return 1
+
+        # Apply timing advisor if enabled
+        if args.use_timing:
+            logger.info("\n" + "=" * 80)
+            logger.info("⏰ TIMING ADVISOR - Analyzing optimal bet placement timing")
+            logger.info("=" * 80)
+
+            timing_advisor = BetTimingAdvisor()
+            timing_filtered = []
+
+            for signal in actionable:
+                game = games_df[games_df['game_id'] == signal.game_id].iloc[0]
+
+                rec = timing_advisor.get_timing_recommendation(
+                    game_id=signal.game_id,
+                    bet_type='spread',  # Assuming spread, adjust if needed
+                    bet_side=signal.bet_side,
+                    current_edge=signal.model_edge,
+                    commence_time=game.get('commence_time'),
+                )
+
+                logger.info(f"\n{signal.game_id} ({signal.bet_side}):")
+                logger.info(f"  Action: {rec.action.upper()} (confidence: {rec.confidence:.0%})")
+                logger.info(f"  Expected CLV: Now {rec.expected_clv_now:+.2%}, Optimal {rec.expected_clv_optimal:+.2%}")
+
+                if rec.action == 'place_now':
+                    timing_filtered.append(signal)
+                    logger.info(f"  ✓ PLACING BET")
+                    for reason in rec.reasons:
+                        logger.info(f"    • {reason}")
+
+                elif rec.action == 'wait':
+                    logger.info(f"  ⏳ WAITING {rec.suggested_wait_hours:.1f} hours")
+                    for reason in rec.reasons:
+                        logger.info(f"    • {reason}")
+                    logger.warning(f"  ⚠️  Bet will NOT be placed now (scheduling not implemented)")
+
+                elif rec.action == 'avoid':
+                    logger.info(f"  ✗ AVOIDING BET")
+                    for reason in rec.reasons:
+                        logger.info(f"    • {reason}")
+
+            original_count = len(actionable)
+            actionable = timing_filtered
+
+            logger.info(f"\nTiming Advisor Results:")
+            logger.info(f"  {len(timing_filtered)}/{original_count} bets passed timing filter")
+
+            if len(timing_filtered) == 0:
+                logger.warning("  ⚠️  No bets recommended for immediate placement")
+                logger.info("\n" + "=" * 80)
+                logger.info("✅ Pipeline complete - no immediate bets")
+                logger.info("=" * 80)
+                return 0
 
         # Log bet with risk management
         bets_placed = 0

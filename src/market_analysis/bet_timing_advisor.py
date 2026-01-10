@@ -34,12 +34,38 @@ class TimingRecommendation:
 
 
 class BetTimingAdvisor:
-    """Real-time timing guidance for pending bets."""
+    """
+    Real-time timing guidance for pending bets.
+
+    Based on empirical analysis of 27,982 historical odds records:
+    - OPTIMAL WINDOW: 1-4 hours before game (0.67 pts avg movement)
+    - AVOID: 48-72 hours (1.71 pts avg movement, 83% of lines move >0.5pts)
+    - RISKY: 0-1 hour (closing line too efficient)
+
+    See docs/BET_TIMING_ANALYSIS.md for full analysis.
+    """
+
+    # Empirically derived optimal windows (from historical analysis)
+    OPTIMAL_WINDOW_MIN = 1.0  # 1 hour before game (start of optimal window)
+    OPTIMAL_WINDOW_MAX = 4.0  # 4 hours before game (end of optimal window)
 
     # Risk thresholds
-    HIGH_RISK_HOURS = 2  # Within 2 hours of game, don't wait
-    MEDIUM_RISK_HOURS = 6  # Within 6 hours, moderate risk
+    HIGH_RISK_HOURS = 1  # Within 1 hour of game, too close to closing line
+    EARLY_RISK_HOURS = 48  # More than 48 hours out, opening line volatility
+    MEDIUM_RISK_HOURS = 12  # 12-48 hours, moderate volatility
+
+    # CLV improvement thresholds
     MIN_CLV_IMPROVEMENT = 0.005  # 0.5% minimum improvement to wait
+
+    # Expected line movement by window (from empirical analysis)
+    EXPECTED_MOVEMENT = {
+        'opening': 1.71,  # 48-72hr
+        'early': 1.06,    # 24-48hr
+        'mid': 0.97,      # 12-24hr
+        'late': 1.04,     # 4-12hr
+        'optimal': 0.67,  # 1-4hr (BEST)
+        'closing': 0.50,  # 0-1hr (too late)
+    }
 
     def __init__(
         self,
@@ -100,12 +126,11 @@ class BetTimingAdvisor:
         # Calculate wait risk
         risk = self._calculate_wait_risk(game_id, hours_to_game)
 
-        # Get historical optimal timing
-        optimal_timing = self.historical.optimal_timing_by_bet_type()
-        optimal_hours = optimal_timing.get(bet_type, 12)  # Default to 12 hours
+        # Check if we're in optimal window (1-4 hours empirically derived)
+        in_optimal_window = (self.OPTIMAL_WINDOW_MIN <= hours_to_game <= self.OPTIMAL_WINDOW_MAX)
 
-        # Check if we're in optimal window
-        in_optimal_window = abs(hours_to_game - optimal_hours) < 2
+        # Use empirical optimal window midpoint for calculations
+        optimal_hours = (self.OPTIMAL_WINDOW_MIN + self.OPTIMAL_WINDOW_MAX) / 2  # 2.5 hours
 
         # Estimate expected CLV now vs optimal
         expected_clv_now = self._estimate_clv(current_edge, hours_to_game, bet_type)
@@ -117,11 +142,19 @@ class BetTimingAdvisor:
         action = 'place_now'
         confidence = 0.5
 
-        # HIGH RISK: Close to game, don't wait
-        if hours_to_game <= self.HIGH_RISK_HOURS:
+        # TOO EARLY: Opening line volatility (48+ hours)
+        if hours_to_game >= self.EARLY_RISK_HOURS:
+            action = 'wait'
+            confidence = 0.85
+            suggested_wait_hours = hours_to_game - optimal_hours
+            reasons.append(f"TOO EARLY: {hours_to_game:.1f}h out - opening lines highly volatile (avg 1.7pt movement)")
+            reasons.append(f"Wait until 1-4hr window for best prices (currently in opening window)")
+
+        # TOO LATE: Too close to closing line (<1 hour)
+        elif hours_to_game <= self.HIGH_RISK_HOURS:
             action = 'place_now'
-            confidence = 0.9
-            reasons.append(f"Within {self.HIGH_RISK_HOURS}h of game - place immediately")
+            confidence = 0.7  # Lower confidence - closing line already efficient
+            reasons.append(f"Within {self.HIGH_RISK_HOURS}h of game - closing line, place now or skip")
 
         # STEAM DETECTED: Place now
         elif conditions.get('steam_detected', False):
@@ -129,11 +162,12 @@ class BetTimingAdvisor:
             confidence = 0.85
             reasons.append("Steam move detected - line moving against us, place now")
 
-        # ALREADY IN OPTIMAL WINDOW: Place now
+        # ✅ OPTIMAL WINDOW: 1-4 hours (BEST)
         elif in_optimal_window:
             action = 'place_now'
-            confidence = 0.8
-            reasons.append(f"In optimal timing window (~{optimal_hours}h before game)")
+            confidence = 0.9  # High confidence - empirically validated
+            reasons.append(f"✅ OPTIMAL WINDOW: {hours_to_game:.1f}h before game (1-4hr window)")
+            reasons.append(f"Empirically best timing: lowest volatility (0.67pt avg movement)")
 
         # SHARP ALIGNED: Consider waiting if far from game
         elif conditions.get('sharp_aligned', False) and hours_to_game > self.MEDIUM_RISK_HOURS:

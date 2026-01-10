@@ -5,7 +5,7 @@ This directory contains all operational and analysis scripts for the NBA betting
 ## Daily Operations
 
 ### Core Pipeline
-- **`daily_betting_pipeline.py`** - Main daily workflow for bet generation
+- **`daily_betting_pipeline.py`** - Main daily workflow for bet generation (with `--use-timing` for optimal bet placement)
 - **`daily_multi_strategy_pipeline.py`** - Multi-strategy orchestration (spread, props, arbitrage, B2B)
 - **`settle_bets.py`** - Bet settlement and tracking
 - **`send_bet_notifications.py`** - Discord notifications for new bets
@@ -54,6 +54,8 @@ This directory contains all operational and analysis scripts for the NBA betting
 - **`generate_clv_report.py`** - Closing Line Value analysis
 - **`line_shopping_report.py`** - Multi-sportsbook line comparison
 - **`paper_trading_report.py`** - Paper trading performance report
+- **`analyze_bet_timing.py`** - Optimal bet timing analysis and recommendations (DEPRECATED: use analyze_line_movement_timing.py)
+- **`analyze_line_movement_timing.py`** - Empirical line movement timing analysis (27K+ odds records)
 
 ---
 
@@ -90,14 +92,20 @@ cp .env.example .env
 
 ### Examples
 ```bash
-# Run daily pipeline
+# Run daily pipeline (standard)
 python scripts/daily_betting_pipeline.py
+
+# Run daily pipeline with timing optimization (RECOMMENDED)
+python scripts/daily_betting_pipeline.py --use-timing
 
 # Retrain models
 python scripts/retrain_models.py
 
 # Generate CLV report
 python scripts/generate_clv_report.py
+
+# Analyze optimal bet timing
+python scripts/analyze_line_movement_timing.py
 ```
 
 ---

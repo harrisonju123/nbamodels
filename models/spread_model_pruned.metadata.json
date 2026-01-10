@@ -1,0 +1,51 @@
+{
+  "created_at": "2026-01-10T01:36:42.172121",
+  "n_features": 74,
+  "n_features_original": 99,
+  "n_features_removed": 24,
+  "features_removed": [
+    "away_is_post_allstar",
+    "home_missing_impact",
+    "away_missing_impact",
+    "missing_impact_diff",
+    "away_total_impact",
+    "home_injury_pct",
+    "away_injury_pct",
+    "home_n_injured",
+    "away_n_injured",
+    "ref_crew_total_bias",
+    "ref_crew_pace_factor",
+    "ref_crew_over_rate",
+    "ref_crew_home_bias",
+    "ref_crew_size",
+    "home_news_recency",
+    "away_news_recency",
+    "home_sentiment",
+    "away_sentiment",
+    "home_sentiment_volume",
+    "away_sentiment_volume",
+    "sentiment_diff",
+    "sentiment_enabled",
+    "home_b2b",
+    "away_b2b"
+  ],
+  "pruning_strategy": "conservative (remove zero-importance only)",
+  "original_metrics": {
+    "accuracy": 0.0,
+    "auc": 0.0,
+    "log_loss": 0.0,
+    "brier_score": 0.0
+  },
+  "pruned_metrics": {
+    "accuracy": 0.5173410404624278,
+    "auc": 0.5161981258366801,
+    "log_loss": 0.7080205330800554,
+    "brier_score": 0.25660958400403416
+  },
+  "improvement": {
+    "accuracy": 0.5173410404624278,
+    "auc": 0.5161981258366801,
+    "log_loss": 0.7080205330800554,
+    "brier_score": 0.25660958400403416
+  }
+}

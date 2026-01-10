@@ -1,0 +1,128 @@
+# ============================================================================
+# NBA BETTING SYSTEM - PRODUCTION CRONTAB (v2.0)
+# ============================================================================
+#
+# INSTITUTIONAL-GRADE AUTOMATED BETTING OPERATION
+# Designed for: Jane Street/Citadel operational standards
+#
+# Install:   crontab /path/to/nbamodels/deploy/crontab_production.txt
+# Verify:    crontab -l
+# Monitor:   tail -f logs/cron.log
+#
+# Times: All times in ET (adjust for your timezone)
+# ============================================================================
+
+PROJECT=/path/to/nbamodels
+PYTHON=$PROJECT/.venv/bin/python
+SHELL=/bin/bash
+
+# Send email on errors (set your email)
+MAILTO=your-email@example.com
+
+# ============================================================================
+# CORE BETTING LOOP
+# ============================================================================
+
+# Generate Bets (Optimal Timing Windows: 3PM and 5PM ET)
+# Based on empirical analysis: 1-4hr before 7PM games = best CLV
+# Using baseline strategy until CLV data builds up
+0 15,17 * * * cd $PROJECT && $PYTHON scripts/daily_betting_pipeline.py --strategy baseline >> logs/pipeline.log 2>&1 || echo "Pipeline failed" >> logs/alerts.log
+
+# ============================================================================
+# SETTLEMENT & REPORTING
+# ============================================================================
+
+# Morning Settlement (6:00 AM ET)
+# Settle overnight games, calculate CLV, update performance
+0 6 * * * cd $PROJECT && $PYTHON scripts/settle_bets.py >> logs/settlement.log 2>&1 || echo "Settlement failed" >> logs/alerts.log
+
+# Populate CLV Data (6:15 AM ET)
+15 6 * * * cd $PROJECT && $PYTHON scripts/populate_clv_data.py >> logs/clv.log 2>&1
+
+# Daily Health Check (9:00 AM ET)
+0 9 * * * cd $PROJECT && ./ops/health_check.sh >> logs/health.log 2>&1
+
+# ============================================================================
+# DATA COLLECTION (Automated)
+# ============================================================================
+
+# Line Snapshots (Every 15 minutes for CLV tracking)
+*/15 * * * * cd $PROJECT && $PYTHON scripts/capture_opening_lines.py >> logs/lines.log 2>&1
+*/15 * * * * cd $PROJECT && $PYTHON scripts/capture_closing_lines.py >> logs/lines.log 2>&1
+
+# News Collection (Hourly during active hours: 9AM-11PM ET)
+0 9-23 * * * cd $PROJECT && $PYTHON scripts/collect_news.py >> logs/news.log 2>&1
+
+# Referee Assignments (Daily at 10 AM ET)
+0 10 * * * cd $PROJECT && $PYTHON scripts/collect_referees.py >> logs/referees.log 2>&1
+
+# Confirmed Lineups (Every 15 min during game hours: 5-11 PM ET)
+*/15 17-23 * * * cd $PROJECT && $PYTHON scripts/collect_lineups.py >> logs/lineups.log 2>&1
+
+# ============================================================================
+# WEEKLY OPERATIONS
+# ============================================================================
+
+# Weekly Performance Report (Sunday 10 AM ET)
+0 10 * * 0 cd $PROJECT && $PYTHON scripts/paper_trading_report.py >> logs/reports.log 2>&1
+
+# Weekly CLV Analysis (Sunday 10:30 AM ET)
+30 10 * * 0 cd $PROJECT && $PYTHON scripts/generate_clv_report.py >> logs/reports.log 2>&1
+
+# ============================================================================
+# MONTHLY OPERATIONS
+# ============================================================================
+
+# Monthly Model Retraining (1st of month, 2 AM ET)
+0 2 1 * * cd $PROJECT && $PYTHON scripts/retrain_models.py >> logs/retraining.log 2>&1
+
+# Monthly Backup (1st of month, 3 AM ET)
+0 3 1 * * cd $PROJECT && tar -czf backups/backup-$(date +\%Y\%m\%d).tar.gz models/ data/bets/ config/ >> logs/backup.log 2>&1
+
+# ============================================================================
+# MAINTENANCE
+# ============================================================================
+
+# Log Rotation (Daily at 2 AM ET)
+# Compress logs older than 7 days, delete logs older than 30 days
+0 2 * * * find $PROJECT/logs -name "*.log" -mtime +7 -exec gzip {} \; 2>/dev/null
+0 2 * * * find $PROJECT/logs -name "*.log.gz" -mtime +30 -delete 2>/dev/null
+
+# Disk Space Alert (Daily at 8 AM ET)
+0 8 * * * [ $(df -h $PROJECT | awk 'NR==2 {print $4}' | sed 's/G//') -lt 10 ] && echo "Low disk space" >> logs/alerts.log
+
+# ============================================================================
+# MONITORING & ALERTS
+# ============================================================================
+
+# Check for Critical Errors (Every hour)
+0 * * * * grep -i "CRITICAL\|FATAL" $PROJECT/logs/*.log | tail -10 >> logs/alerts.log 2>/dev/null
+
+# API Rate Limit Monitor (Every 4 hours)
+0 */4 * * * tail -100 $PROJECT/logs/*.log | grep "API requests remaining" | tail -1 >> logs/api_usage.log 2>/dev/null
+
+# ============================================================================
+# END OF CRONTAB
+# ============================================================================
+#
+# VERIFICATION CHECKLIST:
+# ✓ Updated PROJECT path
+# ✓ Updated PYTHON path
+# ✓ Updated MAILTO email
+# ✓ Adjusted times for your timezone
+# ✓ Created logs/ directory
+# ✓ Created backups/ directory
+# ✓ Made health_check.sh executable (chmod +x ops/health_check.sh)
+# ✓ Tested all scripts manually first
+#
+# MONITORING:
+# - Check logs/health.log daily
+# - Check logs/alerts.log for issues
+# - Review logs/pipeline.log for bet generation
+# - Review logs/settlement.log for results
+#
+# SUPPORT:
+# - See ops/OPERATIONS_PLAYBOOK.md for full documentation
+# - See docs/TIMING_OPTIMIZATION_QUICKSTART.md for timing details
+#
+# ============================================================================

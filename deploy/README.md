@@ -1,355 +1,367 @@
-# NBA Betting System - Deployment Guide
+# Droplet Deployment Guide
 
-Deploy your betting system to DigitalOcean Droplet in ~20 minutes.
-
-## 📋 What's Included
-
-```
-deploy/
-├── README.md               # This file
-├── setup.sh                # One-command server setup script
-├── nba-dashboard.service   # Systemd service for Streamlit dashboard
-├── nba-api.service         # Systemd service for FastAPI backend
-└── crontab.txt             # All 13 cron jobs
-```
+Simple guide for deploying the NBA betting system to a DigitalOcean droplet.
 
 ---
 
-## 🚀 Quick Start
+## Quick Setup (15 Minutes)
 
-### Step 1: Create Droplet (5 minutes)
+### 1. Create Droplet
 
-1. Go to [digitalocean.com](https://digitalocean.com)
-2. Sign up for account (use [this referral link](https://m.do.co/c/your-referral) for $200 credit)
-3. Create new Droplet:
-   - **Size:** Basic - Regular - 4GB RAM / 2 vCPU - $24/month
-   - **Datacenter:** New York 1 or San Francisco 3 (close to you)
-   - **OS:** Ubuntu 22.04 LTS
-   - **Authentication:** SSH Key (add your public key)
-   - **Hostname:** nba-betting-system
-4. Note the IP address
+**Recommended Specs:**
+- **OS**: Ubuntu 22.04 LTS
+- **RAM**: 4GB minimum (8GB recommended)
+- **Storage**: 80GB SSD
+- **Region**: Choose closest to you
 
-### Step 2: Initial Server Setup (2 minutes)
+### 2. Initial Server Setup
 
 ```bash
-# SSH into your server
-ssh root@YOUR_SERVER_IP
+# SSH into droplet
+ssh root@YOUR_DROPLET_IP
 
-# Clone your repository
+# Update system
+apt update && apt upgrade -y
+
+# Install Python 3.11+
+apt install -y python3.11 python3.11-venv python3-pip git sqlite3
+
+# Create user (optional but recommended)
+adduser nba
+usermod -aG sudo nba
+su - nba
+```
+
+### 3. Clone Repository
+
+```bash
+cd ~
 git clone https://github.com/YOUR_USERNAME/nbamodels.git
 cd nbamodels
 ```
 
-### Step 3: Run Setup Script (10 minutes)
+### 4. Setup Virtual Environment
 
 ```bash
-# Make setup script executable (if not already)
-chmod +x deploy/setup.sh
+# Create virtual environment
+python3.11 -m venv .venv
 
-# Run setup
-./deploy/setup.sh
+# Activate
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
 ```
 
-This will:
-- Install Python 3.12, nginx, git
-- Create virtual environment
-- Install all dependencies from requirements.txt
-- Create necessary directories
-- Install systemd services
-- Configure firewall
-
-### Step 4: Configure Environment (2 minutes)
+### 5. Configure Environment
 
 ```bash
-# Copy .env file from your local machine
-# Run this from your LOCAL machine, not the server:
-scp .env root@YOUR_SERVER_IP:/root/nbamodels/.env
-```
+# Copy example env file
+cp .env.example .env
 
-Or create .env manually on server:
-```bash
+# Edit with your API keys
 nano .env
-# Add your API keys:
-# ODDS_API_KEY=your_key_here
-# BALLDONTLIE_API_KEY=your_key_here
 ```
 
-### Step 5: Install Cron Jobs (1 minute)
+**Required Environment Variables:**
+```bash
+ODDS_API_KEY=your_odds_api_key_here
+DISCORD_WEBHOOK_URL=your_discord_webhook_url_here  # Optional
+```
+
+Get your free Odds API key at: https://the-odds-api.com/
+
+### 6. Download Models
 
 ```bash
-# Install all cron jobs
-crontab deploy/crontab.txt
+# Models are required for predictions
+# If you have them locally, upload via scp:
+# scp models/*.pkl nba@YOUR_DROPLET_IP:~/nbamodels/models/
+
+# Verify models exist
+ls -lh models/
+# Should see: spread_model_calibrated.pkl, player_props_model.pkl
+```
+
+### 7. Initialize Database
+
+```bash
+# Create bets database
+python scripts/init_db.py
+
+# Verify
+sqlite3 data/bets/bets.db "SELECT COUNT(*) FROM bets"
+# Should output: 0
+```
+
+### 8. Make Scripts Executable
+
+```bash
+chmod +x ops/dashboard.sh
+chmod +x ops/health_check.sh
+```
+
+### 9. Test System
+
+```bash
+# Run health check
+./ops/health_check.sh
+# Should show: ✓ ALL SYSTEMS OPERATIONAL
+
+# Test dashboard
+./ops/dashboard.sh
+# Should display interactive dashboard
+
+# Test bet generation (dry run)
+python scripts/daily_betting_pipeline.py --strategy baseline --dry-run
+# Should generate predictions without saving
+```
+
+### 10. Install Crontab
+
+```bash
+# Edit crontab with your paths
+nano deploy/crontab_production.txt
+
+# Update these lines:
+# PROJECT=/home/nba/nbamodels
+# MAILTO=your-email@example.com
+
+# Install crontab
+crontab deploy/crontab_production.txt
 
 # Verify installation
 crontab -l
 ```
 
-### Step 6: Start Services (1 minute)
+---
+
+## Daily Operations (5 Minutes)
+
+### Morning Check (9:00 AM ET)
 
 ```bash
-# Enable services to start on boot
-systemctl enable nba-dashboard nba-api
+cd ~/nbamodels
+./ops/dashboard.sh
 
-# Start services
-systemctl start nba-dashboard nba-api
+# Review:
+# - System status: OPERATIONAL ✓
+# - Win Rate: >54% ✓
+# - ROI: >5% ✓
+# - Today's bets
+# - Alerts: None ✓
 
-# Check status
-systemctl status nba-dashboard
-systemctl status nba-api
-```
-
-### Step 7: Verify Deployment (2 minutes)
-
-```bash
-# Check services are running
-curl http://localhost:8501  # Dashboard
-curl http://localhost:8000/health  # API
-
-# View service logs
-journalctl -u nba-dashboard -f
-
-# Check cron jobs
-tail -f logs/pipeline.log
+# Done. System runs itself.
 ```
 
 ---
 
-## 🌐 Access Your System
+## Production Schedule
 
-After deployment, access your services:
+**Automated by crontab:**
 
-- **Dashboard:** `http://YOUR_SERVER_IP:8501`
-- **API:** `http://YOUR_SERVER_IP:8000`
-- **API Docs:** `http://YOUR_SERVER_IP:8000/docs`
-
----
-
-## 📊 What Gets Deployed
-
-### Services (Always Running)
-- **Streamlit Dashboard** (port 8501) - Real-time betting analytics
-- **FastAPI Backend** (port 8000) - REST API for bet tracking
-
-### Cron Jobs (Scheduled)
-
-| Schedule | Script | Purpose |
-|----------|--------|---------|
-| Hourly | `collect_line_snapshots.py` | Track odds changes |
-| Every 15 min | `capture_opening_lines.py` | Capture opening lines |
-| Every 15 min | `capture_closing_lines.py` | Capture closing lines |
-| Hourly | `collect_news.py` | Scrape NBA news |
-| 10 AM ET daily | `collect_referees.py` | Get referee assignments |
-| Every 15 min (5-11 PM ET) | `collect_lineups.py` | Track starting lineups |
-| 4 PM ET daily | `daily_betting_pipeline.py` | Generate daily picks |
-| 6 AM ET daily | `settle_bets.py` | Settle completed bets |
-| 6 AM ET daily | `populate_clv_data.py` | Calculate CLV |
-| 6:15 AM ET daily | `validate_closing_lines.py` | Validate lines |
+| Time | Task | Description |
+|------|------|-------------|
+| 6:00 AM | Settlement | Process overnight game results |
+| 6:15 AM | CLV Calculation | Calculate closing line value |
+| 9:00 AM | Health Check | System validation |
+| 3:00 PM | Generate Bets | Optimal timing window (1-4hr before games) |
+| 5:00 PM | Generate Bets | Second betting window |
+| Every 15 min | Line Capture | Track opening/closing lines for CLV |
+| Hourly (9AM-11PM) | News Collection | Gather injury/lineup news |
+| Daily 10 AM | Referees | Collect referee assignments |
+| Weekly (Sunday) | Reports | Performance and CLV analysis |
 
 ---
 
-## 🔄 Updating Your Code
+## Monitoring
 
-When you make changes locally and want to deploy:
+### Log Files
 
 ```bash
-# SSH into server
-ssh root@YOUR_SERVER_IP
+# View recent pipeline activity
+tail -50 logs/pipeline.log
 
-# Pull latest changes
-cd /root/nbamodels
-git pull
+# View settlement results
+tail -50 logs/settlement.log
 
-# Restart services to pick up changes
-systemctl restart nba-dashboard nba-api
+# Check for errors
+grep ERROR logs/*.log
 
-# For cron job changes, reinstall crontab
-crontab deploy/crontab.txt
+# Check alerts
+cat logs/alerts.log
+```
+
+### Quick Metrics
+
+```bash
+# Total P&L
+sqlite3 data/bets/bets.db "SELECT SUM(profit) FROM bets WHERE outcome IS NOT NULL"
+
+# Win rate
+sqlite3 data/bets/bets.db "
+SELECT PRINTF('%.1f%%',
+  CAST(SUM(CASE WHEN outcome='win' THEN 1 ELSE 0 END) AS FLOAT) / COUNT(*) * 100
+) FROM bets WHERE outcome IS NOT NULL"
+
+# Bets today
+sqlite3 data/bets/bets.db "SELECT COUNT(*) FROM bets WHERE DATE(logged_at) = DATE('now')"
 ```
 
 ---
 
-## 🛠️ Useful Commands
+## Troubleshooting
 
-### Service Management
+### Dashboard won't start
+
 ```bash
-# Start/stop/restart services
-systemctl start nba-dashboard
-systemctl stop nba-dashboard
-systemctl restart nba-dashboard
+# Check permissions
+chmod +x ops/dashboard.sh
 
-# View service status
-systemctl status nba-dashboard
-
-# View service logs (live)
-journalctl -u nba-dashboard -f
-
-# View service logs (last 100 lines)
-journalctl -u nba-dashboard -n 100
+# Run health check instead
+./ops/health_check.sh
 ```
 
-### Cron Job Management
+### No bets generated
+
+**Common causes:**
+1. No games today (check NBA schedule)
+2. All games filtered by edge threshold
+3. CLV data not populated yet (wait 1-2 days)
+
+**Debug:**
 ```bash
-# View installed cron jobs
-crontab -l
-
-# Edit cron jobs
-crontab -e
-
-# View cron execution log
-grep CRON /var/log/syslog | tail -20
-
-# View specific script logs
-tail -f logs/pipeline.log
-tail -f logs/settle.log
-tail -f logs/clv.log
+python scripts/daily_betting_pipeline.py --strategy baseline --dry-run 2>&1 | grep -A5 "filtered"
 ```
 
-### Database Management
+### API rate limit exceeded
+
 ```bash
-# Connect to SQLite database
-sqlite3 data/bets/bets.db
+# Check remaining requests
+tail -100 logs/*.log | grep "API requests remaining"
 
-# Backup database
-cp data/bets/bets.db data/bets/bets.db.backup
-
-# Check database size
-du -sh data/bets/bets.db
+# Odds API free tier: 500 requests/month
+# Consider upgrading if hitting limits
 ```
 
-### System Monitoring
+### Database locked
+
 ```bash
-# Check disk space
-df -h
-
-# Check memory usage
-free -h
-
-# Check running processes
+# Check for running processes
 ps aux | grep python
 
-# Check active connections
-ss -tulpn | grep -E '8501|8000'
+# Kill if stuck
+pkill -f daily_betting_pipeline
+
+# Restart cron
+crontab -l | crontab -
 ```
 
 ---
 
-## 🐛 Troubleshooting
+## Maintenance
 
-### Services won't start
+### Weekly Tasks
 
 ```bash
-# Check service logs
-journalctl -u nba-dashboard -n 50
+# Review performance report (automated Sunday 10 AM)
+cat logs/reports.log
 
-# Check if port is already in use
-ss -tulpn | grep 8501
-
-# Try running manually to see errors
-cd /root/nbamodels
-source .venv/bin/activate
-streamlit run analytics_dashboard.py
+# Review CLV report (automated Sunday 10:30 AM)
+python scripts/generate_clv_report.py
 ```
 
-### Cron jobs not running
+### Monthly Tasks
 
 ```bash
-# Check cron service is running
-systemctl status cron
+# Model retraining (automated 1st of month, 2 AM)
+# Backup (automated 1st of month, 3 AM)
 
-# Check cron logs
-grep CRON /var/log/syslog | tail -20
-
-# Run script manually to test
-cd /root/nbamodels
-source .venv/bin/activate
-python scripts/daily_betting_pipeline.py
+# Manual backup:
+tar -czf backup-$(date +%Y%m%d).tar.gz models/ data/bets/ config/
 ```
 
-### Out of disk space
+### Log Rotation
 
+Automated by crontab:
+- Logs >7 days: Compressed (gzip)
+- Logs >30 days: Deleted
+
+Manual cleanup:
 ```bash
-# Check disk usage
-df -h
-
-# Clean up old logs
-find logs/ -name "*.log" -mtime +7 -delete
-find logs/ -name "*.log.old" -delete
-
-# Clear pip cache
-.venv/bin/pip cache purge
+find logs -name "*.log" -mtime +7 -exec gzip {} \;
+find logs -name "*.log.gz" -mtime +30 -delete
 ```
 
 ---
 
-## 🔒 Security Recommendations
+## Security
 
-### Change Default SSH Port (Optional)
+### Firewall Setup
+
 ```bash
-# Edit SSH config
-nano /etc/ssh/sshd_config
-# Change Port 22 to Port 2222
+# Enable firewall
+ufw allow OpenSSH
+ufw enable
 
-# Update firewall
-ufw allow 2222/tcp
-ufw delete allow 22/tcp
-
-# Restart SSH
-systemctl restart sshd
+# Only allow SSH (betting system doesn't need external access)
+ufw status
 ```
 
-### Set Up SSL/HTTPS (Optional)
-```bash
-# Install Certbot
-apt install certbot python3-certbot-nginx
+### API Key Security
 
-# Get SSL certificate (requires domain name)
-certbot --nginx -d yourdomain.com
-```
-
-### Regular Updates
-```bash
-# Update system packages weekly
-apt update && apt upgrade -y
-```
+- Never commit `.env` to git
+- Store API keys in environment variables only
+- Rotate keys periodically
+- Use Discord webhooks (optional) for notifications without exposing keys
 
 ---
 
-## 💰 Cost Estimate
+## Support
 
-**Monthly Costs:**
-- DigitalOcean Droplet (4GB): $24.00
-- **Total:** $24/month
+**Quick Reference:**
+- **Operations Guide**: `ops/PLAYBOOK.md`
+- **Dashboard**: `./ops/dashboard.sh`
+- **Health Check**: `./ops/health_check.sh`
 
-**One-time:**
-- Domain name (optional): $10-15/year
+**Full Documentation:**
+- **Main README**: `README.md`
+- **Scripts Guide**: `scripts/README.md`
+- **Bet Timing Analysis**: `docs/BET_TIMING_ANALYSIS.md`
 
-**Note:** New DigitalOcean accounts get $200 credit (2 months free), and students can get more credits through GitHub Student Developer Pack.
-
----
-
-## 📈 Next Steps
-
-After deployment:
-
-1. **Monitor first 24 hours** - Check logs, verify cron jobs run
-2. **Test a full cycle** - Wait for daily pipeline → bets → settlement
-3. **Set up backups** - Consider automated database backups
-4. **Add monitoring** - UptimeRobot (free) for service uptime alerts
-5. **Optimize** - Tune based on performance metrics
+**Logs:**
+- **Pipeline**: `logs/pipeline.log`
+- **Settlement**: `logs/settlement.log`
+- **Alerts**: `logs/alerts.log`
+- **Health**: `logs/health.log`
 
 ---
 
-## 🆘 Support
+## Success Criteria
 
-If you encounter issues:
+**After deployment, verify:**
 
-1. Check logs: `journalctl -u nba-dashboard -f`
-2. Test manually: `python scripts/daily_betting_pipeline.py`
-3. Verify environment: `.env` file has all required API keys
-4. Check firewall: `ufw status`
+- [ ] Health check passes (exit code 0)
+- [ ] Dashboard shows system status
+- [ ] Crontab installed (`crontab -l`)
+- [ ] Dry run generates predictions
+- [ ] Database accessible
+- [ ] Models loaded successfully
+- [ ] API key working (check logs)
+- [ ] Logs directory exists and writable
+
+**Daily verification:**
+
+- [ ] Bets generated at 3 PM and 5 PM
+- [ ] Games settled at 6 AM
+- [ ] Health check runs at 9 AM
+- [ ] No critical errors in logs
+- [ ] Performance metrics stable (>54% win rate, >5% ROI)
 
 ---
 
-**Deployment Time:** ~20 minutes
-**Monthly Cost:** $7
-**Uptime:** 24/7 automated operation
+**Status**: Production Ready
+
+**Philosophy**: "Simple systems work. Complex systems fail."
+
+This is a tight, institutional-grade operation. Daily interaction: 5 minutes. Everything else is automated, monitored, and documented.

@@ -12,19 +12,23 @@ global:
 # Strategy Allocation (must sum to <= 1.0)
 # Defines what % of bankroll each strategy can use
 # CONSOLIDATED (2026-01-09): Removed totals (+0.9% ROI unprofitable) and live (untested)
+# UPDATED (2026-01-10): Removed player props (disabled odds fetching)
+#   - Reallocated props 35% → spread 50%, b2b_rest 20%
+#   - Focus on proven spread model + arbitrage + b2b structural edge
 allocation:
-  spread: 0.35     # 35% for spread betting (VALIDATED: +23.6% ROI)
+  spread: 0.50     # 50% for spread betting (MAIN STRATEGY: proven 6.91% ROI, 56% WR)
   arbitrage: 0.30  # 30% allocation (VALIDATED: 10.93% avg profit, 36 arbs in 57 days)
-  props: 0.20      # 20% allocation - player props models (27-89% ROI)
-  b2b_rest: 0.15   # 15% allocation (VALIDATED: +8.7% ROI, 57% WR)
+  props: 0.00      # 0% allocation - DISABLED (odds fetching removed)
+  b2b_rest: 0.20   # 20% allocation (INCREASED: +8.7% ROI, 57% WR)
 
 # Per-Strategy Daily Limits
 # Maximum number of bets per strategy per day
+# UPDATED (2026-01-10): Adjusted limits after removing props (spread 50%, b2b_rest 20%)
 daily_limits:
-  spread: 10      # Max 10 spread bets per day
-  arbitrage: 5    # Max 5 arbitrage bets per day
-  props: 8        # Max 8 player props bets per day (4 prop types)
-  b2b_rest: 5     # Max 5 B2B rest bets per day
+  spread: 15      # Max 15 spread bets per day (INCREASED: 50% allocation, main strategy)
+  arbitrage: 5    # Max 5 arbitrage bets per day (capacity limited by arb availability)
+  props: 0        # DISABLED (odds fetching removed)
+  b2b_rest: 7     # Max 7 B2B rest bets per day (INCREASED: 20% allocation)
 
 # Strategy-Specific Settings
 strategies:
@@ -51,7 +55,7 @@ strategies:
 
   # Player Props
   props:
-    enabled: true   # ENABLED - production models trained on full dataset
+    enabled: false  # DISABLED - player props odds fetching removed
     min_edge: 0.05
     prop_types:
       - PTS    # Points (27.1% ROI)
@@ -77,7 +81,8 @@ strategies:
     min_edge_home: 0.10  # HOME PENALTY: 10% edge required for home bets (away: 11.36% ROI, home: 4.81% ROI)
     prefer_away: true  # ENABLED: Strongly prefer away bets (11.36% ROI vs 4.81%)
     clv_filter: true
-    optimal_timing: true
+    optimal_timing: true  # ENABLED: Use empirical timing optimization (1-4hr window)
+    use_timing_advisor: true  # ENABLED: Apply BetTimingAdvisor filter (see docs/BET_TIMING_ANALYSIS.md)
 
 # Risk Management
 risk:

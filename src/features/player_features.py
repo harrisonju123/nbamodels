@@ -248,8 +248,8 @@ class PlayerStatsClient:
 class PlayerFeatureBuilder:
     """Builds player-level features and aggregates to team level."""
 
-    # Rolling windows (in games)
-    WINDOWS = [3, 5, 10]
+    # Rolling windows (in games) - consolidated to reduce feature noise
+    WINDOWS = [5, 10]  # Removed 3-game window (too volatile)
 
     # Key player stats to track
     PLAYER_STATS = [

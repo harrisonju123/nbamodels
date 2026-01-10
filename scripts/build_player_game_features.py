@@ -198,15 +198,16 @@ def add_matchup_features(
     player_df['team_ast_roll5'] = player_df['team_ast_roll5'].fillna(25.0)
     player_df['team_3pm_roll5'] = player_df['team_3pm_roll5'].fillna(12.0)
 
-    # Opponent defensive stats (placeholders - would need opponent team mapping)
-    logger.info("  Adding opponent defensive stats (using league averages)...")
-    player_df['opp_def_rating'] = 110.0         # League average defensive rating
-    player_df['opp_pace'] = 100.0               # League average pace
-    player_df['opp_pts_allowed_roll5'] = 110.0  # League average points allowed
-    player_df['opp_reb_allowed_roll5'] = 45.0   # League average rebounds allowed
-    player_df['opp_3pt_defense'] = 12.0         # League average 3PM allowed
+    # Opponent defensive stats (DISABLED - placeholders provided no signal)
+    # These were hardcoded to league averages and added noise, not signal
+    # logger.info("  Adding opponent defensive stats (using league averages)...")
+    # player_df['opp_def_rating'] = 110.0         # League average defensive rating
+    # player_df['opp_pace'] = 100.0               # League average pace
+    # player_df['opp_pts_allowed_roll5'] = 110.0  # League average points allowed
+    # player_df['opp_reb_allowed_roll5'] = 45.0   # League average rebounds allowed
+    # player_df['opp_3pt_defense'] = 12.0         # League average 3PM allowed
 
-    logger.success("Added team and opponent features")
+    logger.success("Added team features")
     return player_df
 
 

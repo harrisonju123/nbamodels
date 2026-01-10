@@ -1,0 +1,23 @@
+{
+  "best_params": {
+    "n_estimators": 483,
+    "max_depth": 5,
+    "learning_rate": 0.012357562689163652,
+    "min_child_weight": 5,
+    "subsample": 0.9578122498796631,
+    "colsample_bytree": 0.7710541468466333,
+    "gamma": 3.5899630190989864,
+    "reg_alpha": 0.2677105768807876,
+    "reg_lambda": 0.49463164118320996,
+    "scale_pos_weight": 1.1698982061156922
+  },
+  "metrics": {
+    "composite_score": 0.9232090958648242,
+    "log_loss": 0.6466167292906811,
+    "auc": 0.6802249606074097,
+    "brier": 0.22786492140930906
+  },
+  "tuning_date": "2026-01-10T00:28:02.688230",
+  "n_trials": 100,
+  "training_samples": 641
+}

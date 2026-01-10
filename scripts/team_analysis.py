@@ -20,7 +20,7 @@ warnings.filterwarnings('ignore')
 
 from src.features.game_features import GameFeatureBuilder
 from src.features.team_features import TeamFeatureBuilder
-from src.models.point_spread import PointSpreadModel
+from src.models.spread_model import SpreadPredictionModel
 from scipy import stats
 
 # Skip Four Factors

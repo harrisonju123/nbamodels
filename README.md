@@ -55,7 +55,7 @@ python scripts/generate_clv_report.py
 ## 📊 Features
 
 ### Machine Learning Models
-- **Dual Prediction Model** (MLP + XGBoost ensemble)
+- **Spread Prediction Model** (XGBoost classifier with isotonic calibration)
 - **100 features** including:
   - Team rolling statistics (10-game windows)
   - Elo ratings
@@ -323,28 +323,37 @@ Detailed documentation available in `docs/`:
 - **[BACKTEST_ANALYSIS.md](docs/BACKTEST_ANALYSIS.md)** - Detailed backtest results and analysis
 - **[INTEGRATION_COMPLETE.md](docs/INTEGRATION_COMPLETE.md)** - Integration milestone summary
 
-## 🔑 Key Components
+## 🔑 Key Components (Consolidated January 2026)
 
-### DualPredictionModel
-Ensemble of MLP and XGBoost with probability calibration:
-- **MLP**: Captures non-linear patterns
-- **XGBoost**: Handles feature interactions
-- **Calibration**: Ensures probability reliability
+### SpreadPredictionModel (`spread_model_calibrated.pkl`)
+XGBoost classifier with isotonic calibration:
+- **42.24% ROI, 75.4% win rate** (934 bets, 2020-2024 backtest)
+- Probability calibration for reliable confidence estimates
+- Optimized feature set with reduced noise
 
-### OptimizedBettingStrategy
-Risk-managed betting with:
-- Kelly criterion position sizing (10% fraction)
-- Home bias mitigation (-2% penalty)
-- CLV-based filtering
-- Drawdown protection (30% stop)
+### Player Props Models (4 models)
+Individual XGBoost regressors for player performance:
+- **Points (pts)**: 27.1% ROI, 66.6% win rate
+- **Rebounds (reb)**: 55.8% ROI, 81.6% win rate
+- **Assists (ast)**: 89.4% ROI, 99.2% win rate (best performer)
+- **3-Pointers (3pm)**: 55.0% ROI, 81.2% win rate
+
+### Multi-Strategy Orchestrator
+Consolidated risk-managed betting across 4 strategies:
+- **Spread** (35% allocation): Edge-based spread betting
+- **Arbitrage** (30% allocation): Cross-bookmaker arbitrage
+- **Player Props** (20% allocation): Individual player performance
+- **B2B Rest** (15% allocation): Back-to-back rest advantage
+- Kelly criterion position sizing (25% fraction)
+- Correlation-aware portfolio management
 
 ### GameFeatureBuilder
-Orchestrates feature generation:
-- Team statistics (rolling windows)
+Streamlined feature generation (consolidated features):
+- Team statistics (rolling windows: 5, 10, 20 games)
 - Elo ratings
-- Matchup features
-- Alternative data integration
+- Matchup features (H2H, division, conference)
 - Schedule/rest/travel factors
+- **Removed**: Alternative data (referee, news, sentiment) - added noise without signal
 
 ## ⚠️ Disclaimer
 

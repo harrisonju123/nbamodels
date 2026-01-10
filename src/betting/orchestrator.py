@@ -34,22 +34,22 @@ class OrchestratorConfig:
     """Maximum total in unsettled bets (25% of bankroll)"""
 
     max_bets_per_strategy: Dict[StrategyType, int] = field(default_factory=lambda: {
-        StrategyType.SPREAD: 3,
-        StrategyType.TOTALS: 5,
-        StrategyType.LIVE: 3,
+        StrategyType.SPREAD: 10,
         StrategyType.ARBITRAGE: 5,
-        StrategyType.PLAYER_PROPS: 5,
+        StrategyType.PLAYER_PROPS: 8,
+        StrategyType.B2B_REST: 5,
+        # Removed: TOTALS (unprofitable), LIVE (untested)
     })
-    """Maximum daily bets per strategy type"""
+    """Maximum daily bets per strategy type (consolidated)"""
 
     strategy_allocation: Dict[StrategyType, float] = field(default_factory=lambda: {
-        StrategyType.SPREAD: 0.10,        # 10% of bankroll
-        StrategyType.TOTALS: 0.30,        # 30%
-        StrategyType.LIVE: 0.20,          # 20%
-        StrategyType.ARBITRAGE: 0.25,     # 25%
-        StrategyType.PLAYER_PROPS: 0.15,  # 15%
+        StrategyType.SPREAD: 0.35,        # 35% of bankroll
+        StrategyType.ARBITRAGE: 0.30,     # 30%
+        StrategyType.PLAYER_PROPS: 0.20,  # 20%
+        StrategyType.B2B_REST: 0.15,      # 15%
+        # Removed: TOTALS (unprofitable), LIVE (untested)
     })
-    """Per-strategy bankroll allocation (as fraction of total)"""
+    """Per-strategy bankroll allocation (as fraction of total) - consolidated"""
 
     min_bet_size: float = 1.0
     """Minimum bet size in dollars"""

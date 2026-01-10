@@ -1,12 +1,7 @@
 """Betting and backtesting utilities."""
 
 from .kelly import KellyBetSizer, UncertaintyAdjustedBet
-from .dual_model_backtest import (
-    DualModelATSBacktester,
-    DualModelBacktestResult,
-    ATSBet,
-    run_dual_model_ats_backtest,
-)
+# Archived: dual_model_backtest (dual_model archived)
 from .edge_strategy import (
     EdgeStrategy,
     BetSignal,
@@ -20,10 +15,7 @@ from .edge_strategy import (
 __all__ = [
     "KellyBetSizer",
     "UncertaintyAdjustedBet",
-    "DualModelATSBacktester",
-    "DualModelBacktestResult",
-    "ATSBet",
-    "run_dual_model_ats_backtest",
+    # Archived: DualModelATSBacktester, DualModelBacktestResult, etc.
     "EdgeStrategy",
     "BetSignal",
     "calculate_expected_value",

@@ -17,20 +17,10 @@ try:
 except (ImportError, Exception):
     CalibratedModel = None
 
-try:
-    from .point_spread import PointSpreadModel
-except (ImportError, Exception):
-    PointSpreadModel = None
-
-try:
-    from .totals import TotalsModel
-except (ImportError, Exception):
-    TotalsModel = None
-
-try:
-    from .dual_model import DualPredictionModel
-except (ImportError, Exception):
-    DualPredictionModel = None
+# Archived models (moved to archive/unused_models/ on 2026-01-09)
+# - point_spread.py -> PointSpreadModel (superseded by SpreadPredictionModel)
+# - totals.py -> TotalsModel (disabled strategy, +0.9% ROI not profitable)
+# - dual_model.py -> DualPredictionModel (failed validation, -4.0% ROI)
 
 from .injury_adjustment import InjuryAdjuster
 
@@ -77,69 +67,18 @@ except (ImportError, Exception):
     EnsembleModel = None
     create_default_ensemble = None
 
-try:
-    from .stacking import (
-        StackedEnsembleModel,
-        StackingConfig,
-        create_stacked_ensemble,
-    )
-except (ImportError, Exception):
-    StackedEnsembleModel = None
-    StackingConfig = None
-    create_stacked_ensemble = None
-
-try:
-    from .bayesian import (
-        BayesianLinearModel,
-        BayesianPrediction,
-        BayesianEnsembleUncertainty,
-        MCDropoutWrapper,
-    )
-except (ImportError, Exception):
-    BayesianLinearModel = None
-    BayesianPrediction = None
-    BayesianEnsembleUncertainty = None
-    MCDropoutWrapper = None
-
-try:
-    from .conformal import (
-        ConformalPredictor,
-        AdaptiveConformalPredictor,
-        BayesianConformalPredictor,
-        PredictionInterval,
-        create_conformal_wrapper,
-        create_bayesian_conformal_wrapper,
-    )
-except (ImportError, Exception):
-    ConformalPredictor = None
-    AdaptiveConformalPredictor = None
-    BayesianConformalPredictor = None
-    PredictionInterval = None
-    create_conformal_wrapper = None
-    create_bayesian_conformal_wrapper = None
-
-try:
-    from .online_learning import (
-        OnlineUpdater,
-        AdaptiveEnsembleUpdater,
-        RetrainTrigger,
-        UpdateResult,
-    )
-except (ImportError, Exception):
-    OnlineUpdater = None
-    AdaptiveEnsembleUpdater = None
-    RetrainTrigger = None
-    UpdateResult = None
+# Archived models (moved to archive/unused_models/ on 2026-01-09)
+# - stacking.py -> StackedEnsembleModel, StackingConfig, create_stacked_ensemble (not used in production)
+# - bayesian.py -> BayesianLinearModel, BayesianPrediction, BayesianEnsembleUncertainty, MCDropoutWrapper (not used in production)
+# - conformal.py -> ConformalPredictor, AdaptiveConformalPredictor, BayesianConformalPredictor (only used in tests)
+# - online_learning.py -> OnlineUpdater, AdaptiveEnsembleUpdater, RetrainTrigger, UpdateResult (only used in tests)
 
 __all__ = [
     # Base interface
     "BaseModel",
-    # Original models
+    # Production models (consolidated)
     "SpreadPredictionModel",
     "CalibratedModel",
-    "PointSpreadModel",
-    "TotalsModel",
-    "DualPredictionModel",
     "InjuryAdjuster",
     # Trained injury model (Phase 5)
     "TrainedInjuryModel",
@@ -151,30 +90,10 @@ __all__ = [
     "CatBoostSpreadModel",
     "NeuralSpreadModel",
     "EnsembleModel",
-    "StackedEnsembleModel",
-    "StackingConfig",
     # Factory functions
     "create_xgb_model",
     "create_lgbm_model",
     "create_catboost_model",
     "create_neural_model",
     "create_default_ensemble",
-    "create_stacked_ensemble",
-    # Bayesian uncertainty
-    "BayesianLinearModel",
-    "BayesianPrediction",
-    "BayesianEnsembleUncertainty",
-    "MCDropoutWrapper",
-    # Conformal prediction
-    "ConformalPredictor",
-    "AdaptiveConformalPredictor",
-    "BayesianConformalPredictor",
-    "PredictionInterval",
-    "create_conformal_wrapper",
-    "create_bayesian_conformal_wrapper",
-    # Online learning
-    "OnlineUpdater",
-    "AdaptiveEnsembleUpdater",
-    "RetrainTrigger",
-    "UpdateResult",
 ]

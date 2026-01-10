@@ -56,7 +56,28 @@ except ImportError:
 
 
 class GameFeatureBuilder:
-    """Builds game-level features for prediction."""
+    """Builds game-level features for prediction.
+
+    Orchestrates multiple feature builders to create comprehensive game-level features:
+    - Team rolling statistics (TeamFeatureBuilder)
+    - Elo ratings (EloRatingSystem)
+    - Matchup/H2H features (MatchupFeatureBuilder)
+    - Lineup impact (LineupFeatureBuilder) - optional
+    - Alternative data features (Referee, News, Sentiment) - DISABLED by default
+
+    Args:
+        team_builder: Custom TeamFeatureBuilder instance (default: new instance)
+        use_elo: Include Elo ratings (default: True)
+        use_lineup_features: Include lineup impact features (default: auto-detect availability)
+        use_matchup_features: Include H2H/matchup features (default: True)
+        use_referee_features: Include referee tendencies (default: False - consolidated 2026-01-09,
+            backtests showed noise without predictive value)
+        use_news_features: Include news volume signals (default: False - consolidated 2026-01-09,
+            backtests showed noise without predictive value)
+        use_sentiment_features: Include public sentiment (default: False - consolidated 2026-01-09,
+            backtests showed noise without predictive value)
+        player_impact_path: Path to player impact model cache (default: auto-detect)
+    """
 
     # Default path for player impact model
     DEFAULT_IMPACT_PATH = "data/cache/player_impact/player_impact_model.parquet"
@@ -67,9 +88,9 @@ class GameFeatureBuilder:
         use_elo: bool = True,
         use_lineup_features: bool = None,  # Auto-detect if None
         use_matchup_features: bool = True,
-        use_referee_features: bool = True,  # NEW: Alternative data
-        use_news_features: bool = True,     # NEW: Alternative data
-        use_sentiment_features: bool = True,  # NEW: Alternative data
+        use_referee_features: bool = False,  # DISABLED (consolidated 2026-01-09): Adds noise without predictive value
+        use_news_features: bool = False,     # DISABLED (consolidated 2026-01-09): Adds noise without predictive value
+        use_sentiment_features: bool = False,  # DISABLED (consolidated 2026-01-09): Adds noise without predictive value
         player_impact_path: Optional[str] = None,
     ):
         self.team_builder = team_builder or TeamFeatureBuilder()

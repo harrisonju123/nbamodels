@@ -11,41 +11,26 @@ global:
 
 # Strategy Allocation (must sum to <= 1.0)
 # Defines what % of bankroll each strategy can use
+# CONSOLIDATED (2026-01-09): Removed totals (+0.9% ROI unprofitable) and live (untested)
 allocation:
-  totals: 0.00     # DISABLED - not profitable (+0.9% ROI)
-  live: 0.00       # DISABLED - not tested
-  arbitrage: 0.25  # 25% allocation (VALIDATED: 10.93% avg profit, 36 arbs in 57 days)
-  props: 0.10      # 10% allocation - player props models trained
+  spread: 0.35     # 35% for spread betting (VALIDATED: +23.6% ROI)
+  arbitrage: 0.30  # 30% allocation (VALIDATED: 10.93% avg profit, 36 arbs in 57 days)
+  props: 0.20      # 20% allocation - player props models (27-89% ROI)
   b2b_rest: 0.15   # 15% allocation (VALIDATED: +8.7% ROI, 57% WR)
-  spread: 0.50     # 50% for spread betting (VALIDATED: +23.6% ROI)
 
 # Per-Strategy Daily Limits
 # Maximum number of bets per strategy per day
 daily_limits:
-  totals: 0       # DISABLED
-  live: 0         # DISABLED
+  spread: 10      # Max 10 spread bets per day
   arbitrage: 5    # Max 5 arbitrage bets per day
-  props: 5        # Max 5 player props bets per day
+  props: 8        # Max 8 player props bets per day (4 prop types)
   b2b_rest: 5     # Max 5 B2B rest bets per day
-  spread: 10      # Increased for spread-only strategy
 
 # Strategy-Specific Settings
 strategies:
-  # Totals Betting
-  totals:
-    enabled: false  # DISABLED - backtest showed only +0.9% ROI (not profitable)
-    min_edge: 0.05  # 5% minimum edge
-    require_no_b2b: false  # Filter out back-to-back games
-    min_pace: null  # Optional: Only bet on fast-paced games (e.g., 100)
-    max_pace: null  # Optional: Only bet on slow-paced games (e.g., 95)
-    model_path: "models/totals_model.pkl"
-
-  # Live Betting
-  live:
-    enabled: false  # Disabled by default (requires live monitoring)
-    min_edge: 0.05
-    min_confidence: 50.0  # Minimum confidence threshold
-    max_quarter: 4  # Don't bet in overtime
+  # ARCHIVED: Totals and Live strategies removed (see archive/disabled_strategies/)
+  # - totals: +0.9% ROI (unprofitable)
+  # - live: Not tested in production
 
   # Arbitrage Detection
   arbitrage:
@@ -69,11 +54,11 @@ strategies:
     enabled: true   # ENABLED - production models trained on full dataset
     min_edge: 0.05
     prop_types:
-      - PTS    # Points
-      - REB    # Rebounds
-      - AST    # Assists
-      - 3PM    # Three-pointers made
-    models_dir: "models/player_props_production/latest_converted"  # Production models (converted format)
+      - PTS    # Points (27.1% ROI)
+      - REB    # Rebounds (55.8% ROI)
+      - AST    # Assists (89.4% ROI)
+      - 3PM    # Three-pointers made (55.0% ROI)
+    models_dir: "models/player_props"  # Simplified path (player_props_production removed)
 
     # Safety filters (lineup/injury protection)
     require_starter: true        # Only bet on confirmed starters
@@ -83,12 +68,14 @@ strategies:
   b2b_rest:
     enabled: true   # ENABLED - backtest: +8.7% ROI, 57% win rate
     min_rest_advantage: 2  # Minimum rest day difference
-    min_edge: 0.03  # 3% minimum edge (less strict than spread)
+    min_edge: 0.05  # INCREASED: 5% minimum edge (was 3%, now matches spread)
 
   # Spread Betting (legacy EdgeStrategy)
   spread:
     enabled: true   # ENABLED - validated +23.6% ROI with 5%+ edge
-    min_edge: 0.05  # CRITICAL: Must be >= 5% (backtest showed 3-5% loses money)
+    min_edge: 0.07  # INCREASED: 7% minimum edge (was 5%, backtest showed 3-5% loses money)
+    min_edge_home: 0.10  # HOME PENALTY: 10% edge required for home bets (away: 11.36% ROI, home: 4.81% ROI)
+    prefer_away: true  # ENABLED: Strongly prefer away bets (11.36% ROI vs 4.81%)
     clv_filter: true
     optimal_timing: true
 

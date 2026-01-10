@@ -245,24 +245,16 @@ class RetrainingPipeline:
             return True, {"dry_run": True}
 
         try:
-            if model_name == "dual_model":
-                from src.models.dual_model import train_dual_model
-                metrics = train_dual_model()
-
-            elif model_name == "spread_model":
+            # CONSOLIDATED: Only spread_model training supported
+            # Removed: dual_model (failed validation), point_spread_model (superseded),
+            #          totals_model (unprofitable)
+            if model_name == "spread_model":
                 from src.models.spread_model import train_spread_model
                 metrics = train_spread_model()
 
-            elif model_name == "point_spread_model":
-                from src.models.point_spread import train_point_spread_model
-                metrics = train_point_spread_model()
-
-            elif model_name == "totals_model":
-                from src.models.totals import train_totals_model
-                metrics = train_totals_model()
-
             else:
-                logger.error(f"Unknown model: {model_name}")
+                logger.error(f"Unknown model: {model_name}. Only spread_model is supported.")
+                logger.info("Removed models: dual_model, point_spread_model, totals_model")
                 return False, {}
 
             logger.info(f"Successfully trained {model_name}")
@@ -426,12 +418,10 @@ class RetrainingPipeline:
         # Step 4: Backup existing models
         backup_dir = self.backup_models()
 
-        # Step 5: Train all models
+        # Step 5: Train all models (CONSOLIDATED: only spread_model)
+        # Removed: dual_model (failed validation), point_spread_model (superseded), totals_model (unprofitable)
         models_to_train = [
-            "dual_model",
-            "spread_model",
-            "point_spread_model",
-            "totals_model"
+            "spread_model",  # Only active production model
         ]
 
         results = {}

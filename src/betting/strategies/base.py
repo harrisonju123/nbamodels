@@ -15,10 +15,10 @@ import pandas as pd
 
 
 class StrategyType(str, Enum):
-    """Strategy type identifiers."""
+    """Strategy type identifiers (consolidated 2026-01-09)."""
     SPREAD = "spread"
-    TOTALS = "totals"
-    LIVE = "live"
+    # TOTALS = "totals"  # ARCHIVED 2026-01-09: Not profitable (+0.9% ROI)
+    # LIVE = "live"  # ARCHIVED 2026-01-09: Never tested in production
     ARBITRAGE = "arbitrage"
     PLAYER_PROPS = "player_props"
     B2B_REST = "b2b_rest"

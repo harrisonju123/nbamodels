@@ -1,0 +1,135 @@
+# Multi-Strategy Betting Configuration
+# Edit this file to enable/disable strategies and adjust parameters
+
+# Global Settings
+global:
+  bankroll: 1000.0  # Starting bankroll (will be updated dynamically)
+  kelly_fraction: 0.25  # 25% Kelly (conservative)
+  max_daily_exposure: 0.15  # Max 15% of bankroll per day
+  min_bet_size: 10.0  # Minimum bet size in dollars
+  paper_trading: true  # Set to false for live betting
+
+# Strategy Allocation (must sum to <= 1.0)
+# Defines what % of bankroll each strategy can use
+allocation:
+  totals: 0.00     # DISABLED - not profitable (+0.9% ROI)
+  live: 0.00       # DISABLED - not tested
+  arbitrage: 0.25  # 25% allocation (VALIDATED: 10.93% avg profit, 36 arbs in 57 days)
+  props: 0.10      # 10% allocation - player props models trained
+  b2b_rest: 0.15   # 15% allocation (VALIDATED: +8.7% ROI, 57% WR)
+  spread: 0.50     # 50% for spread betting (VALIDATED: +23.6% ROI)
+
+# Per-Strategy Daily Limits
+# Maximum number of bets per strategy per day
+daily_limits:
+  totals: 0       # DISABLED
+  live: 0         # DISABLED
+  arbitrage: 5    # Max 5 arbitrage bets per day
+  props: 5        # Max 5 player props bets per day
+  b2b_rest: 5     # Max 5 B2B rest bets per day
+  spread: 10      # Increased for spread-only strategy
+
+# Strategy-Specific Settings
+strategies:
+  # Totals Betting
+  totals:
+    enabled: false  # DISABLED - backtest showed only +0.9% ROI (not profitable)
+    min_edge: 0.05  # 5% minimum edge
+    require_no_b2b: false  # Filter out back-to-back games
+    min_pace: null  # Optional: Only bet on fast-paced games (e.g., 100)
+    max_pace: null  # Optional: Only bet on slow-paced games (e.g., 95)
+    model_path: "models/totals_model.pkl"
+
+  # Live Betting
+  live:
+    enabled: false  # Disabled by default (requires live monitoring)
+    min_edge: 0.05
+    min_confidence: 50.0  # Minimum confidence threshold
+    max_quarter: 4  # Don't bet in overtime
+
+  # Arbitrage Detection
+  arbitrage:
+    enabled: true   # ENABLED - backtest: 36 arbs, 10.93% avg profit
+    min_arb_profit: 0.01  # 1% minimum profit
+    bookmakers:
+      - draftkings
+      - fanduel
+      - betmgm
+      - betrivers
+      - bovada
+      - lowvig
+      - fanatics
+      - williamhill_us
+      - mybookieag
+      - betonlineag
+      - betus
+
+  # Player Props
+  props:
+    enabled: true   # ENABLED - production models trained on full dataset
+    min_edge: 0.05
+    prop_types:
+      - PTS    # Points
+      - REB    # Rebounds
+      - AST    # Assists
+      - 3PM    # Three-pointers made
+    models_dir: "models/player_props_production/latest_converted"  # Production models (converted format)
+
+    # Safety filters (lineup/injury protection)
+    require_starter: true        # Only bet on confirmed starters
+    skip_questionable: true      # Skip players with injury designation (Q, D)
+
+  # B2B Rest Advantage
+  b2b_rest:
+    enabled: true   # ENABLED - backtest: +8.7% ROI, 57% win rate
+    min_rest_advantage: 2  # Minimum rest day difference
+    min_edge: 0.03  # 3% minimum edge (less strict than spread)
+
+  # Spread Betting (legacy EdgeStrategy)
+  spread:
+    enabled: true   # ENABLED - validated +23.6% ROI with 5%+ edge
+    min_edge: 0.05  # CRITICAL: Must be >= 5% (backtest showed 3-5% loses money)
+    clv_filter: true
+    optimal_timing: true
+
+# Risk Management
+risk:
+  # Drawdown Protection
+  drawdown_warning_threshold: 0.10  # 10% drawdown warning
+  drawdown_pause_threshold: 0.20    # 20% drawdown pause betting
+  drawdown_hard_stop: 0.30          # 30% drawdown circuit breaker
+
+  # Correlation Limits
+  max_same_team_exposure: 0.15      # Max 15% on same team
+  max_same_game_exposure: 0.10      # Max 10% on same game
+  max_conference_exposure: 0.30     # Max 30% on same conference
+  max_division_exposure: 0.20       # Max 20% on same division
+
+  # Position Sizing
+  correlation_penalty_factor: 0.5   # Reduce size by 50% for correlated bets
+  high_correlation_threshold: 0.6   # Correlation > 60% triggers penalty
+
+# Reporting
+reporting:
+  # Discord Webhook (optional)
+  discord_webhook_url: null  # Set in .env as DISCORD_WEBHOOK_URL
+
+  # Daily Report Settings
+  send_daily_report: true
+  report_time: "09:00"  # Send report at 9 AM
+
+  # Metrics to Track
+  track_by_strategy: true
+  track_by_bet_type: true
+  track_roi_by_edge_bucket: true
+
+# Development/Testing
+dev:
+  # Use mock data for testing
+  use_mock_data: false
+
+  # Verbose logging
+  verbose: false
+
+  # Dry run mode (show recommendations without logging)
+  dry_run: false

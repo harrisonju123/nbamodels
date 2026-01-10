@@ -96,7 +96,7 @@ def get_todays_games() -> pd.DataFrame:
     # Load trained model with comprehensive error handling
     try:
         logger.info("Loading trained spread model...")
-        model_path = Path("models/spread_model.pkl")
+        model_path = Path("models/spread_model_calibrated.pkl")
 
         if not model_path.exists():
             logger.error(f"Model file not found: {model_path}")
@@ -105,21 +105,29 @@ def get_todays_games() -> pd.DataFrame:
         with open(model_path, "rb") as f:
             model_data = pickle.load(f)
 
-        # Handle both dict format and DualPredictionModel format
-        if isinstance(model_data, dict):
-            # Dict format: {'model': ..., 'feature_columns': ...}
-            if 'model' not in model_data:
-                raise ValueError("Model file missing 'model' key")
-            if 'feature_columns' not in model_data:
-                raise ValueError("Model file missing 'feature_columns' key")
-            model = model_data["model"]
-            feature_cols = model_data["feature_columns"]
-        elif hasattr(model_data, 'feature_columns'):
-            # DualPredictionModel format
-            model = model_data
-            feature_cols = model_data.feature_columns
-        else:
-            raise ValueError(f"Invalid model file structure - got {type(model_data)}")
+        # Validate model format (CONSOLIDATED: only dict format supported)
+        # Reject archived model types (DualPredictionModel, etc.)
+        if hasattr(model_data, '__class__') and 'DualPredictionModel' in str(type(model_data)):
+            raise ValueError(
+                "DualPredictionModel is archived and no longer supported. "
+                "Use spread_model_calibrated.pkl instead. "
+                "See docs/CONSOLIDATION_MIGRATION.md"
+            )
+
+        if not isinstance(model_data, dict):
+            raise ValueError(
+                f"Invalid model file structure - expected dict, got {type(model_data)}. "
+                "Model must be pickled dict with 'model' and 'feature_columns' keys."
+            )
+
+        # Extract model and features from dict format
+        if 'model' not in model_data:
+            raise ValueError("Model file missing 'model' key")
+        if 'feature_columns' not in model_data:
+            raise ValueError("Model file missing 'feature_columns' key")
+
+        model = model_data["model"]
+        feature_cols = model_data["feature_columns"]
 
         logger.info(f"Loaded model with {len(feature_cols)} features")
 
